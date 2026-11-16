@@ -533,46 +533,66 @@ class FarmerProfilesDeleteView(APIView):
         
 # equipment Categories
 
+
 class EquipmentCategoriesListView(APIView):
 
     def get(self, request):
         try:
             objs = EquipmentCategories.objects.all().order_by("category_code")
-            serializer = EquipmentCategoriesSerializer(objs, many=True)
+            serializer = EquipmentCategoriesSerializer(
+                objs, many=True, context={"request": request}
+            )
             return Response(serializer.data, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
 class EquipmentCategoriesCreateView(APIView):
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
 
     def post(self, request):
         try:
-            serializer = EquipmentCategoriesSerializer(data=request.data, context={"request": request})
+            serializer = EquipmentCategoriesSerializer(
+                data=request.data, context={"request": request}
+            )
             if serializer.is_valid():
-                serializer.save(
-                    createdby=request.user.id,
+                obj = serializer.save(
+                    createdby=request.user.id if request.user.is_authenticated else None,
                     createdon=timezone.now(),
                 )
-                return Response(serializer.data, status=status.HTTP_201_CREATED)
+                return Response(
+                    EquipmentCategoriesSerializer(obj, context={"request": request}).data,
+                    status=status.HTTP_201_CREATED,
+                )
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
 class EquipmentCategoriesUpdateView(APIView):
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
 
     def put(self, request, category_code):
         try:
             obj = get_object_or_404(EquipmentCategories, category_code=category_code)
-            serializer = EquipmentCategoriesSerializer(obj, data=request.data, partial=True, context={"request": request})
+            serializer = EquipmentCategoriesSerializer(
+                obj, data=request.data, partial=True, context={"request": request}
+            )
             if serializer.is_valid():
-                serializer.save(
-                    updatedby=request.user.id,
-                    updatedon=timezone.now()
+                instance = serializer.save(
+                    updatedby=request.user.id if request.user.is_authenticated else None,
+                    updatedon=timezone.now(),
                 )
-                return Response(serializer.data, status=status.HTTP_200_OK)
+                return Response(
+                    EquipmentCategoriesSerializer(instance, context={"request": request}).data,
+                    status=status.HTTP_200_OK,
+                )
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except Http404:
+            return Response({"error": "Category not found"}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 class EquipmentCategoriesDeleteView(APIView):
 
@@ -580,7 +600,12 @@ class EquipmentCategoriesDeleteView(APIView):
         try:
             obj = get_object_or_404(EquipmentCategories, category_code=category_code)
             obj.delete()
-            return Response({"message": "Equipment Category deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
+            return Response(
+                {"message": "Equipment Category deleted successfully"},
+                status=status.HTTP_200_OK,
+            )
+        except Http404:
+            return Response({"error": "Category not found"}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -672,3 +697,79 @@ class LoginView(APIView):
 
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        
+        
+# Equipments
+
+from django.utils import timezone
+
+class EquipmentListView(APIView):
+    def get(self, request):
+        try:
+            objs = Equipment.objects.all().order_by("equipment_code")
+            serializer = EquipmentSerializer(objs, many=True, context={"request": request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class EquipmentCreateView(APIView):
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
+
+    def post(self, request):
+        try:
+            serializer = EquipmentSerializer(data=request.data, context={"request": request})
+            
+            if serializer.is_valid():
+                user_id = request.user.id if request.user and request.user.is_authenticated else request.data.get('createdby')
+                obj = serializer.save(
+                    createdby=user_id,
+                    createdon=timezone.now(),
+                    status=request.data.get('status', 1)
+                )
+                return Response(
+                    EquipmentSerializer(obj, context={"request": request}).data, 
+                    status=status.HTTP_201_CREATED
+                )
+            
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+from django.http import Http404
+
+class EquipmentUpdateView(APIView):
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
+
+    def put(self, request, equipment_code):
+        try:
+            obj = get_object_or_404(Equipment, equipment_code=equipment_code)
+            serializer = EquipmentSerializer(
+                obj, data=request.data, partial=True, context={"request": request}
+            )
+            if serializer.is_valid():
+                user_id = (
+                    request.user.id
+                    if request.user and request.user.is_authenticated
+                    else request.data.get('updatedby')
+                )
+                instance = serializer.save(updatedby=user_id, updatedon=timezone.now())
+                return Response(
+                    EquipmentSerializer(instance, context={"request": request}).data,
+                    status=status.HTTP_200_OK,
+                )
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except Http404:
+            return Response({"error": "Equipment not found"}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class EquipmentDeleteView(APIView):
+    def delete(self, request, equipment_code):
+        try:
+            obj = get_object_or_404(Equipment, equipment_code=equipment_code)
+            obj.delete()
+            return Response({"message": "Equipment deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR) 

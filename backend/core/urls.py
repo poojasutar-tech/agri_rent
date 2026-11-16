@@ -45,4 +45,11 @@ urlpatterns = [
     path('api/farmer_profiles/update/<str:farmer_code>/', FarmerProfilesUpdateView.as_view(), name='farmer_profiles-update'),
     path('api/farmer_profiles/delete/<str:farmer_code>/', FarmerProfilesDeleteView.as_view(), name='farmer_profiles-delete'),
     
+    path('api/equipment/', EquipmentListView.as_view(), name='equipment-list'),
+    path('api/equipment/create/', EquipmentCreateView.as_view(), name='equipment-create'),
+    path('api/equipment/update/<str:equipment_code>/', EquipmentUpdateView.as_view(), name='equipment-update'),
+    path('api/equipment/delete/<str:equipment_code>/', EquipmentDeleteView.as_view(), name='equipment-delete'),
+    
+    
+    
 ]
