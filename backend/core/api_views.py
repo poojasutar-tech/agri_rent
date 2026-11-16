@@ -584,3 +584,91 @@ class EquipmentCategoriesDeleteView(APIView):
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
+# User Reg and login
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from django.contrib.auth.hashers import make_password, check_password
+from django.db.models import Q
+from django.utils import timezone
+from .models import Users
+
+class RegisterView(APIView):
+    def post(self, request):
+        data = request.data
+        email = data.get('email')
+        mobile = data.get('mobile')
+
+        # Check if email or mobile already exists
+        if Users.objects.filter(email=email).exists():
+            return Response({"error": "Email already registered"}, status=status.HTTP_400_BAD_REQUEST)
+        if Users.objects.filter(mobile=mobile).exists():
+            return Response({"error": "Mobile number already registered"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # Generate a unique user code
+            count = Users.objects.count() + 1
+            user_code = f"USR-{count:04d}"
+
+            # Create user and save createdon, status, email_verified, mobile_verified
+            user = Users.objects.create(
+                user_code=user_code,
+                full_name=data.get('full_name'),
+                email=email,
+                mobile=mobile,
+                password_hash=make_password(data.get('password')),
+                role=data.get('role', 'FARMER'),
+                status=1,                  # 1 => Active
+                email_verified=0,          # 0 => Unverified
+                mobile_verified=0,         # 0 => Unverified
+                createdon=timezone.now(),  # Explicitly save registration timestamp
+            )
+
+            # Update createdby to point to themselves since they created their own account
+            user.createdby = user.id
+            user.save(update_fields=['createdby'])
+
+            return Response({
+                "message": "Registration successful!",
+                "user_id": user.id,
+                "user_code": user.user_code,
+                "role": user.role
+            }, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class LoginView(APIView):
+    def post(self, request):
+        identifier = request.data.get('email') # Can be email or mobile
+        password = request.data.get('password')
+
+        if not identifier or not password:
+            return Response({"error": "Email/Mobile and password are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user = Users.objects.filter(Q(email=identifier) | Q(mobile=identifier)).first()
+
+            if user and check_password(password, user.password_hash):
+                if user.status != 1:
+                    return Response({"error": "This account is inactive or blocked."}, status=status.HTTP_403_FORBIDDEN)
+
+                # Update last_login timestamp
+                user.last_login = timezone.now()
+                user.save(update_fields=['last_login'])
+
+                return Response({
+                    "message": "Login successful!",
+                    "role": user.role,
+                    "full_name": user.full_name,
+                    "user_code": user.user_code,
+                    "user_id": user.id
+                }, status=status.HTTP_200_OK)
+            else:
+                return Response({"error": "Invalid email/mobile or password."}, status=status.HTTP_400_BAD_REQUEST)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

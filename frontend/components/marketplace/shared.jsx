@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ArrowRight,
   LockKeyhole,
@@ -10,6 +11,9 @@ import {
   ShieldCheck,
   Sprout,
   Star,
+  User,
+  LogOut,
+  Trash2,
   X,
 } from "lucide-react";
 
@@ -57,9 +61,6 @@ const pageLinks = [
   { label: "About Us", href: "/about" },
   { label: "Equipments", href: "/equipment" },
   { label: "Contact Us", href: "/contact" },
-  { label: "Sign in", href: "/login" },
-  // { label: "Sign up", href: "/registration", className: "nav-register" },
-  // { label: "Get started", href: "/equipment", className: "nav-get-started" },
   { label: "Farm dashboard", href: "/dashboard" },
 ];
 
@@ -68,7 +69,48 @@ export function findMachineByName(name) {
 }
 
 export function FlowHeader({ active }) {
+  const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [userName, setUserName] = useState("");
+  const [userCode, setUserCode] = useState("");
+
+  useEffect(() => {
+    // Read logged-in user info from cookies/localStorage on client load
+    const name = localStorage.getItem("full_name");
+    const code = localStorage.getItem("user_code");
+    if (name) setUserName(name);
+    if (code) setUserCode(code);
+  }, []);
+
+  const handleLogout = () => {
+    // Clear auth state and cookies
+    document.cookie = "is_logged_in=; path=/; max-age=0";
+    localStorage.removeItem("full_name");
+    localStorage.removeItem("user_code");
+    localStorage.removeItem("user_role");
+    setUserName("");
+    router.push("/login");
+  };
+
+  const handleDeleteAccount = async () => {
+    if (!confirm("Are you sure you want to delete your account? This action cannot be undone.")) return;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:8000/api/auth/delete/${userCode}/`, {
+        method: "DELETE",
+      });
+      if (res.ok || res.status === 204) {
+        alert("Account deleted successfully.");
+        handleLogout();
+      } else {
+        alert("Failed to delete account.");
+      }
+    } catch (err) {
+      alert("Error connecting to server.");
+    }
+  };
+
   return (
     <header className="flow-header">
       <Link href="/" className="flow-brand">
@@ -100,6 +142,99 @@ export function FlowHeader({ active }) {
             {link.label}
           </Link>
         ))}
+
+        {/* User Account / Profile Dropdown */}
+        {userName ? (
+          <div className="user-dropdown-container" style={{ position: "relative", display: "inline-block" }}>
+            <button
+              onClick={() => setDropdownOpen(!dropdownOpen)}
+              style={{
+                display: "flex",
+                alignItem: "center",
+                gap: "8px",
+                background: "#f3f4f6",
+                border: "1px solid #d1d5db",
+                padding: "6px 12px",
+                borderRadius: "20px",
+                cursor: "pointer",
+                fontWeight: "500"
+              }}
+            >
+              <User size={16} />
+              <span>{userName}</span>
+            </button>
+
+            {dropdownOpen && (
+              <div
+                style={{
+                  position: "absolute",
+                  right: 0,
+                  top: "40px",
+                  background: "white",
+                  boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+                  borderRadius: "8px",
+                  width: "180px",
+                  zIndex: 100,
+                  overflow: "hidden",
+                  border: "1px solid #e5e7eb"
+                }}
+              >
+                <div style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", fontSize: "0.85rem", color: "#6b7280" }}>
+                  Signed in as <br /><b>{userName}</b>
+                </div>
+                <Link
+                  href="/dashboard"
+                  onClick={() => setDropdownOpen(false)}
+                  style={{ display: "block", padding: "10px 14px", color: "#374151", textDecoration: "none", fontSize: "0.9rem" }}
+                >
+                  My Dashboard
+                </Link>
+                <button
+                  onClick={handleLogout}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    width: "100%",
+                    padding: "10px 14px",
+                    background: "none",
+                    border: "none",
+                    textAlign: "left",
+                    color: "#374151",
+                    cursor: "pointer",
+                    fontSize: "0.9rem",
+                    borderTop: "1px solid #f3f4f6"
+                  }}
+                >
+                  <LogOut size={14} /> Sign out
+                </button>
+                <button
+                  onClick={handleDeleteAccount}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    width: "100%",
+                    padding: "10px 14px",
+                    background: "none",
+                    border: "none",
+                    textAlign: "left",
+                    color: "#dc2626",
+                    cursor: "pointer",
+                    fontSize: "0.9rem",
+                    borderTop: "1px solid #f3f4f6"
+                  }}
+                >
+                  <Trash2 size={14} /> Delete Account
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <Link href="/login" className="nav-signin" style={{ fontWeight: "600", color: "#16a34a" }}>
+            Sign in
+          </Link>
+        )}
       </nav>
     </header>
   );
