@@ -7,6 +7,9 @@ from .api_views import *
 
 urlpatterns = [
     
+    path('api/auth/register/', RegisterView.as_view(), name='auth_register'),
+    path('api/auth/login/', LoginView.as_view(), name='auth_login'),
+    
     path('api/users/', UsersListView.as_view(), name='users-list'),
     path('api/users/create/', UsersCreateView.as_view(), name='users-create'),
     path('api/users/update/<str:user_code>/', UsersUpdateView.as_view(), name='users-update'),
