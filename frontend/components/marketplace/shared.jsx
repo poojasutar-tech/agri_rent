@@ -150,7 +150,7 @@ export function FlowHeader({ active }) {
               onClick={() => setDropdownOpen(!dropdownOpen)}
               style={{
                 display: "flex",
-                alignItem: "center",
+                alignItems: "center",
                 gap: "8px",
                 background: "#f3f4f6",
                 border: "1px solid #d1d5db",
@@ -348,8 +348,8 @@ export function MachineCard({ item }) {
           {item.place} <span>·</span> Owner verified
         </p>
         <div className="flow-spec-list">
-          {item.specs.map((spec) => (
-            <span key={spec}>{spec}</span>
+          {item.specs.map((spec, index) => (
+            <span key={`${item.name}-${spec}-${index}`}>{spec}</span>
           ))}
         </div>
         <div className="flow-machine-foot">

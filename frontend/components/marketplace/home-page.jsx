@@ -5,11 +5,11 @@ import Link from "next/link";
 import {
   ArrowRight, ArrowLeft, Wheat, CheckCircle2, MapPin, Search, ShieldCheck,
   Sprout, Tractor, Compass, Clock, Award, PhoneCall, Truck, Wrench,
-  Wallet, Users, Star,
+  Wallet, Users, Star, Loader2
 } from "lucide-react";
-import { FlowFrame, MachineCard, machines } from "./shared";
+import { FlowFrame, MachineCard } from "./shared";
 
-const REVIEW_MS = 5000; // 5 seconds: enough time to read one review
+const REVIEW_MS = 5000;
 
 const reviews = [
   { quote: "We needed a plow and a planter for one week. Both came on time, worked well, and saved us a lot of money.", name: "Morgan Reynolds", role: "Crop farmer", farm: "Yolo County", metric: "No delays" },
@@ -40,7 +40,6 @@ const partners = [
   { name: "Sierra Foothill Farms", region: "Placer and Sutter", acres: "19,000+ acres" },
 ];
 
-/** Reveals sections as they scroll into view + light hero parallax */
 function useHomeMotion() {
   const rootRef = useRef(null);
   useEffect(() => {
@@ -76,7 +75,6 @@ function useHomeMotion() {
   return rootRef;
 }
 
-/** Soft cursor glow + small 3D tilt on cards (mouse only) */
 function useSpotlightTilt() {
   const onMouseMove = useCallback((e) => {
     const card = e.currentTarget;
@@ -103,14 +101,44 @@ export default function MarketplaceHome() {
   const [active, setActive] = useState(0);
   const [paused, setPaused] = useState(false);
 
-  // Scroll only the review row sideways (never moves the whole page)
+  // Dynamic Equipment state from Django Backend
+  const [machinesList, setMachinesList] = useState([]);
+  const [loadingMachines, setLoadingMachines] = useState(true);
+
+  useEffect(() => {
+    async function fetchEquipment() {
+      try {
+        const res = await fetch("http://127.0.0.1:8000/api/equipment/");
+        if (res.ok) {
+          const data = await res.json();
+          // Map backend fields securely to your card component requirements
+          const mappedData = data.map((item) => ({
+            name: item.name || item.equipment_name || "Farm Machine",
+            category: item.category_name || item.category || "Tractor · 130 HP",
+            place: item.location || item.place || "Davis, CA",
+            rate: item.daily_rate || item.rate || 500,
+            image: item.image_url || item.image || "https://images.unsplash.com/photo-1530267981375-f0de937f5f13?auto=format&fit=crop&w=900&q=85",
+            rating: item.rating || "4.9",
+            description: item.description || "",
+            specs: item.specs || ["4WD", "Cabin", "GPS ready"]
+          }));
+          setMachinesList(mappedData);
+        }
+      } catch (err) {
+        console.error("Failed to fetch equipment list:", err);
+      } finally {
+        setLoadingMachines(false);
+      }
+    }
+    fetchEquipment();
+  }, []);
+
   useEffect(() => {
     const track = trackRef.current;
     const card = track?.querySelectorAll(".ent-review-card")[active];
     if (card) track.scrollTo({ left: card.offsetLeft - track.offsetLeft, behavior: "smooth" });
   }, [active]);
 
-  // Auto-advance. The key on the ring restarts it together with this timer.
   useEffect(() => {
     if (paused) return;
     const t = setTimeout(() => setActive((i) => (i + 1) % reviews.length), REVIEW_MS);
@@ -189,7 +217,7 @@ export default function MarketplaceHome() {
           </Link>
         </section>
 
-        {/* 3. POPULAR MACHINES */}
+        {/* 3. POPULAR MACHINES (DYNAMIC API FETCH) */}
         <section className="ent-section" data-reveal>
           <div className="ent-section-head">
             <div>
@@ -201,13 +229,22 @@ export default function MarketplaceHome() {
               <span>See all machines</span><ArrowRight size={15} className="ent-arrow" />
             </Link>
           </div>
-          <div className="flow-machine-grid ent-machine-wrapper">
-            {machines.map((m, i) => (
-              <div key={m.name} className="ent-card-slot" style={{ "--stagger": `${i * 75}ms` }} {...tilt}>
-                <MachineCard item={m} />
-              </div>
-            ))}
-          </div>
+
+          {loadingMachines ? (
+            <div style={{ display: "flex", justifyContent: "center", padding: "60px 0", color: "#16a34a" }}>
+              <Loader2 className="animate-spin" size={36} />
+            </div>
+          ) : machinesList.length === 0 ? (
+            <p style={{ textAlign: "center", padding: "40px 0", color: "#6b7280" }}>No equipment available at the moment.</p>
+          ) : (
+            <div className="flow-machine-grid ent-machine-wrapper">
+              {machinesList.map((m, i) => (
+                <div key={m.name || i} className="ent-card-slot" style={{ "--stagger": `${i * 75}ms` }} {...tilt}>
+                  <MachineCard item={m} />
+                </div>
+              ))}
+            </div>
+          )}
         </section>
 
         {/* 4. CATEGORIES */}
