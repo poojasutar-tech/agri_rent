@@ -6,8 +6,11 @@ import {
   CalendarDays, MapPin, Search, ShieldCheck, Truck, Wrench, X, Tractor, Wheat,
   ChevronDown, ArrowRight, PhoneCall, CheckCircle2, FileCheck2, Fuel, LifeBuoy, Clock, Users,
 } from "lucide-react";
-import { FlowFrame, MachineCard, machines } from "./shared";
+import { FlowFrame, MachineCard } from "./shared";
+// ⚠️ Adjust this path to wherever your axios instance lives relative to THIS file
+import api from "../../app/utils/domain";
 
+/* Fallbacks – used ONLY if the categories API fails or returns nothing */
 const CATEGORIES = ["All equipment", "Tractor", "Harvester"];
 
 const SORTS = [
@@ -46,6 +49,57 @@ const MARKET_STATS = [
   { icon: ShieldCheck, value: "100%", label: "Owners verified" },
 ];
 
+/* ================= API HELPERS ================= */
+
+const toList = (res) =>
+  Array.isArray(res?.data) ? res.data : res?.data?.results || [];
+
+/** Maps one backend Equipment record to the shape <MachineCard item={...} /> uses.
+ *  Extra aliases (img / photo / location …) are included so the card finds its field
+ *  whichever name it reads. */
+const toMachine = (e, categoryNameByCode) => {
+  const image = e.display_equipment_image || null;
+  const category = categoryNameByCode[e.category_code] || e.category_code || "";
+  return {
+    id: e.equipment_code,
+    code: e.equipment_code,
+    equipment_code: e.equipment_code,
+    name: e.equipment_name || "Equipment",
+    category,
+    category_code: e.category_code,
+    brand: e.brand || "",
+    model: e.model || "",
+    year: e.manufacturing_year || "",
+    description: e.description || "",
+    condition: e.condition_type || "",
+    rate: Number(e.rental_price_per_day) || 0,
+    hourlyRate: Number(e.rental_price_per_hour) || 0,
+    deposit: Number(e.security_deposit) || 0,
+    rating: "New", // backend has no ratings yet
+    // Fields MachineCard reads directly:
+    place: e.location_address || "Location not listed",
+    specs: [
+      e.brand,
+      e.model,
+      e.manufacturing_year,
+      e.condition_type
+        ? `${e.condition_type.charAt(0)}${e.condition_type.slice(1).toLowerCase()} condition`
+        : "",
+    ]
+      .filter(Boolean)
+      .map(String)
+      .slice(0, 3),
+    image,
+    img: image,
+    photo: image,
+    location: e.location_address || "",
+    owner: e.farmer_name || "",
+    availability: e.availability_status || "AVAILABLE",
+    latitude: e.latitude,
+    longitude: e.longitude,
+  };
+};
+
 /** Soft cursor glow + small tilt on cards (mouse only) */
 function useTilt() {
   const onMouseMove = useCallback((e) => {
@@ -71,17 +125,101 @@ export default function EquipmentSearch() {
   const tilt = useTilt();
   const rootRef = useRef(null);
 
+  /* ---------- backend data ---------- */
+  const [apiEquipment, setApiEquipment] = useState([]);
+  const [apiCategories, setApiCategories] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        setLoading(true);
+        setError("");
+        const [equipRes, catRes] = await Promise.all([
+          api.get("api/equipment/"),
+          api.get("api/equipment_categories/"),
+        ]);
+        if (cancelled) return;
+        setApiEquipment(toList(equipRes));
+        setApiCategories(toList(catRes));
+      } catch (err) {
+        if (cancelled) return;
+        console.error("Failed to load marketplace data:", err);
+        setError("We could not load machines right now. Please try again.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [reloadKey]);
+
+  // Active categories only, ordered by sort_order (empty last)
+  const activeCategories = useMemo(
+    () =>
+      apiCategories
+        .filter((c) => Number(c.status) === 1)
+        .sort((a, b) => {
+          const sa = a.sort_order === null || a.sort_order === undefined ? 999 : Number(a.sort_order);
+          const sb = b.sort_order === null || b.sort_order === undefined ? 999 : Number(b.sort_order);
+          return sa - sb;
+        }),
+    [apiCategories]
+  );
+
+  const categoryNameByCode = useMemo(() => {
+    const map = {};
+    apiCategories.forEach((c) => { map[c.category_code] = c.category_name; });
+    return map;
+  }, [apiCategories]);
+
+  // Chips + popular searches come from the backend; constants are only fallbacks
+  const categoryList = useMemo(
+    () => (activeCategories.length ? ["All equipment", ...activeCategories.map((c) => c.category_name)] : CATEGORIES),
+    [activeCategories]
+  );
+
+  const quickSearches = useMemo(
+    () => (activeCategories.length ? activeCategories.slice(0, 6).map((c) => c.category_name) : QUICK_SEARCHES),
+    [activeCategories]
+  );
+
+  // Only machines that are active AND currently available are listed
+  const machines = useMemo(
+    () =>
+      apiEquipment
+        .filter(
+          (e) =>
+            Number(e.status) === 1 &&
+            (e.availability_status || "AVAILABLE") === "AVAILABLE"
+        )
+        .map((e) => toMachine(e, categoryNameByCode)),
+    [apiEquipment, categoryNameByCode]
+  );
+
+  const marketStats = useMemo(
+    () =>
+      MARKET_STATS.map((s) =>
+        s.label === "Machines listed" && !loading && !error
+          ? { ...s, value: String(machines.length) }
+          : s
+      ),
+    [machines.length, loading, error]
+  );
+
   const filtered = useMemo(() => {
     const list = machines.filter(
       (m) =>
-        `${m.name} ${m.category}`.toLowerCase().includes(term.trim().toLowerCase()) &&
+        `${m.name} ${m.category} ${m.brand} ${m.model}`.toLowerCase().includes(term.trim().toLowerCase()) &&
         (category === "All equipment" || m.category.toLowerCase().includes(category.toLowerCase()))
     );
     if (sort === "low") return [...list].sort((a, b) => a.rate - b.rate);
     if (sort === "high") return [...list].sort((a, b) => b.rate - a.rate);
-    if (sort === "rating") return [...list].sort((a, b) => Number(b.rating) - Number(a.rating));
+    if (sort === "rating") return [...list].sort((a, b) => (Number(b.rating) || 0) - (Number(a.rating) || 0));
     return list;
-  }, [term, category, sort]);
+  }, [term, category, sort, machines]);
 
   const countFor = (c) =>
     c === "All equipment" ? machines.length : machines.filter((m) => m.category.toLowerCase().includes(c.toLowerCase())).length;
@@ -151,7 +289,7 @@ export default function EquipmentSearch() {
         {/* Popular searches */}
         <section className="ent-section ent-quick" data-reveal>
           <span>Popular searches:</span>
-          {QUICK_SEARCHES.map((q) => (
+          {quickSearches.map((q) => (
             <button key={q} type="button" className="ent-quick-tag" onClick={() => { setTerm(q); setCategory("All equipment"); }}>
               {q}
             </button>
@@ -160,7 +298,7 @@ export default function EquipmentSearch() {
 
         {/* Marketplace numbers */}
         <section className="ent-section ent-market-stats" data-reveal>
-          {MARKET_STATS.map(({ icon: Icon, value, label }) => (
+          {marketStats.map(({ icon: Icon, value, label }) => (
             <div className="ent-market-stat" key={label}>
               <span className="ent-cat-icon"><Icon size={20} /></span>
               <div><strong>{value}</strong><span>{label}</span></div>
@@ -174,7 +312,11 @@ export default function EquipmentSearch() {
             <div>
               <span className="ent-kicker">Within 50 miles</span>
               <h2>Available near Davis</h2>
-              <p aria-live="polite">{filtered.length} {filtered.length === 1 ? "machine" : "machines"} found</p>
+              <p aria-live="polite">
+                {loading
+                  ? "Loading machines…"
+                  : `${filtered.length} ${filtered.length === 1 ? "machine" : "machines"} found`}
+              </p>
             </div>
             <label className="ent-sort" htmlFor="sort-by">
               <span>Sort by</span>
@@ -188,7 +330,7 @@ export default function EquipmentSearch() {
           </div>
           <div className="ent-chips-row">
             <div className="ent-chips" role="tablist" aria-label="Choose machine type">
-              {CATEGORIES.map((c) => (
+              {categoryList.map((c) => (
                 <button
                   key={c}
                   type="button"
@@ -208,13 +350,32 @@ export default function EquipmentSearch() {
           {/* key on the grid replays the entrance animation when filters change */}
           <div className="flow-machine-grid ent-machine-wrapper" key={`${category}-${term}`}>
             {filtered.map((m, i) => (
-              <div key={m.name} className="ent-card-slot ent-card-enter" style={{ "--stagger": `${i * 70}ms` }} {...tilt}>
+              <div key={m.id} className="ent-card-slot ent-card-enter" style={{ "--stagger": `${i * 70}ms` }} {...tilt}>
                 <MachineCard item={m} />
               </div>
             ))}
           </div>
 
-          {filtered.length === 0 && (
+          {/* Loading state (reuses existing empty-state styling) */}
+          {loading && (
+            <div className="ent-empty">
+              <span className="ent-empty-icon"><Search size={26} /></span>
+              <h3>Loading machines…</h3>
+              <p>Please wait while we find machines near you.</p>
+            </div>
+          )}
+
+          {/* Error state */}
+          {!loading && error && (
+            <div className="ent-empty">
+              <span className="ent-empty-icon"><X size={26} /></span>
+              <h3>Something went wrong</h3>
+              <p>{error}</p>
+              <button type="button" className="ent-btn-secondary" onClick={() => setReloadKey((k) => k + 1)}>Try again</button>
+            </div>
+          )}
+
+          {!loading && !error && filtered.length === 0 && (
             <div className="ent-empty">
               <span className="ent-empty-icon"><Search size={26} /></span>
               <h3>We could not find that machine</h3>

@@ -3,7 +3,7 @@ from django.shortcuts import render
 from django.http import JsonResponse
 from .models import *
 from .serializers import *
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny,IsAuthenticatedOrReadOnly
 from rest_framework.views import APIView
 from rest_framework.response import Response 
 from rest_framework import status
@@ -34,6 +34,237 @@ from rest_framework.response import Response
 from rest_framework.parsers import JSONParser, FormParser, MultiPartParser
 from .models import Users
 from .serializers import UsersSerializer
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework_simplejwt.views import TokenObtainPairView
+
+from rest_framework.views import APIView
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+from rest_framework import status
+
+# admin login and register
+
+
+
+class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+        token['username'] = user.username
+
+        return token
+    
+class MyTokenObtainPairView(TokenObtainPairView):
+    serializer_class = MyTokenObtainPairSerializer
+
+
+@api_view(['GET'])
+def getRoutes(request):
+    routes = [
+        '/api/token',
+        '/api/token/refresh',
+    ]
+
+    return Response(routes)
+
+
+class CredentialsProvidedPermission(permissions.BasePermission):
+    def has_permission(self, request, view):
+        if request.method != "POST":
+            return False
+        username = request.data.get("username")
+        password = request.data.get("password")
+        return bool(username and password)
+
+
+
+class LoginView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        username = request.data.get("username")
+        password = request.data.get("password")
+
+        try:
+            user = Users.objects.get(
+                username=username,
+                status=1
+            )
+        except Users.DoesNotExist:
+            return Response(
+                {
+                    "error": "User not found or inactive"
+                },
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        # Check encrypted password
+        if not check_password(password, user.password):
+            return Response(
+                {
+                    "error": "Invalid password"
+                },
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        # Get User Type Name
+        usertype_name = None
+
+        if user.usertype_code:
+            try:
+                usertype = UsertypeMaster.objects.get(
+                    usertype_code=user.usertype_code
+                )
+                usertype_name = usertype.usertype_name
+
+            except UsertypeMaster.DoesNotExist:
+                pass
+
+        # Session Management
+        request.session["user_id"] = user.user_id
+        request.session["username"] = user.username
+        request.session["usertype_code"] = user.usertype_code
+        request.session["login_time"] = str(timezone.now())
+        request.session.save()
+
+        # Update Last Visit
+        user.lastvisiton = timezone.now()
+        user.save(update_fields=["lastvisiton"])
+
+        # JWT Token
+        refresh = RefreshToken.for_user(user)
+
+        # Permissions
+        permissions_response = {
+            "modules": {},
+            "submodules": {},
+            "activities": {}
+        }
+
+        if user.usertype_code:
+            try:
+                all_permissions = Permissions.objects.filter(
+                    usertype_code=user.usertype_code
+                )
+
+                for p in all_permissions:
+
+                    perm_dict = {
+                        "e_read": p.e_read,
+                        "e_write": p.e_write,
+                        "e_update": p.e_update
+                    }
+
+                    if p.activity_code:
+                        permissions_response["activities"][
+                            p.activity_code
+                        ] = perm_dict
+
+                    elif p.submodule_code:
+                        permissions_response["submodules"][
+                            p.submodule_code
+                        ] = perm_dict
+
+                    elif p.module_code:
+                        permissions_response["modules"][
+                            p.module_code
+                        ] = perm_dict
+
+            except Exception as e:
+                logger.error(
+                    f"Error fetching permissions: {str(e)}"
+                )
+        
+        domain = None
+        try:
+            domain_setting = Settings.objects.get(setting_name="domain")
+            domain = domain_setting.setting_value
+        except Settings.DoesNotExist:
+            pass
+
+        # Final Response
+        response_data = {
+            "access": str(refresh.access_token),
+            "refresh": str(refresh),
+            "username": user.username,
+            "user_id": user.user_id,
+            "usertype_code": user.usertype_code,
+            "usertype_name": usertype_name,
+            "company_code": user.company_code,
+            "employee_code": user.employee_code,
+            "status": user.status,
+            "permission_details": permissions_response,
+            "domain": domain
+        }
+
+        # Return doctor_code only for doctors
+        if user.usertype_code == "DOC":
+            response_data["doctor_code"] = user.doctor_code
+
+        return Response(
+            response_data,
+            status=status.HTTP_200_OK
+        )
+
+class RegisterView(APIView):
+    permission_classes = [AllowAny] 
+
+    def post(self, request):
+        data = request.data
+        username = data.get("username")
+        password = data.get("password")
+
+        if not username or not password:
+            return Response({"error": "Username and password required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if Users.objects.filter(username=username).exists():
+            return Response({"error": "Username already exists"}, status=status.HTTP_400_BAD_REQUEST)
+
+        max_id = Users.objects.aggregate(Max('user_id'))['user_id__max']
+        next_user_id = (max_id or 0) + 1 
+
+        create_params = {
+            "user_id": next_user_id,
+            "status": 1,
+            "superuser": 0,
+            "createdon": timezone.now(),
+            "lastvisiton": timezone.now(),
+        }
+
+        fk_fields = ['company_code', 'usertype_code', 'employee_code']
+
+        for key, value in data.items():
+            if value is not None and value != "":
+                if key == 'password':
+                    create_params['password'] = make_password(value)
+                elif key in fk_fields:
+                    create_params[f"{key}_id"] = value
+                else:
+                    create_params[key] = value
+
+        if not create_params.get("createdby"):
+            create_params["createdby"] = next_user_id
+
+        try:
+            user = Users.objects.create(**create_params)
+            refresh = RefreshToken.for_user(user)
+
+            return Response({
+                "message": "User registered successfully",
+                "user_id": user.user_id,
+                "username": user.username,
+                "createdon": user.createdon,
+                "access": str(refresh.access_token),
+                "refresh": str(refresh)
+            }, status=status.HTTP_201_CREATED)
+            
+        except Exception as e:
+            return Response({"error": f"Database Error: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+
+# User Login and Register
 
 class UsersListView(APIView):
     def get(self, request):
@@ -464,6 +695,9 @@ from .models import FarmerProfiles
 from .serializers import FarmerProfilesSerializer
 
 class FarmerProfilesListView(APIView):
+    
+    permission_classes = [AllowAny]
+    
     def get(self, request):
         try:
             objs = FarmerProfiles.objects.all().order_by("farmer_code")
@@ -535,6 +769,8 @@ class FarmerProfilesDeleteView(APIView):
 
 
 class EquipmentCategoriesListView(APIView):
+    
+    permission_classes = [AllowAny]
 
     def get(self, request):
         try:
@@ -705,6 +941,9 @@ class LoginView(APIView):
 from django.utils import timezone
 
 class EquipmentListView(APIView):
+    
+    permission_classes = [AllowAny]
+    
     def get(self, request):
         try:
             objs = Equipment.objects.all().order_by("equipment_code")
