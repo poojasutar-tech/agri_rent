@@ -10,10 +10,19 @@ from rest_framework import serializers
 from .models import Users
 
 class UsersSerializer(serializers.ModelSerializer):
-    # Explicitly map or ensure user_code is clearly exposed and treated as the identifier
     class Meta:
         model = Users
         fields = '__all__'
+        
+class EngineModuleSerializer(serializers.ModelSerializer):  
+    class Meta:
+        model = EngineModule
+        fields = "__all__"
+        
+class SettingsSerializer(serializers.ModelSerializer):  
+    class Meta:
+        model = Settings
+        fields = "__all__"
         
 class CountriesSerializer(serializers.ModelSerializer):
     class Meta:
@@ -47,27 +56,27 @@ class FarmerProfilesSerializer(serializers.ModelSerializer):
     user_code = serializers.SlugRelatedField(
         slug_field='user_code',
         queryset=Users.objects.all(),
-        allow_null=True, required=False
+        
     )
     country_code = serializers.SlugRelatedField(
         slug_field='country_code',
         queryset=Countries.objects.all(),
-        allow_null=True, required=False
+        
     )
     state_code = serializers.SlugRelatedField(
         slug_field='state_code',
         queryset=States.objects.all(),
-        allow_null=True, required=False
+        
     )
     district_code = serializers.SlugRelatedField(
         slug_field='district_code',
         queryset=Districts.objects.all(),
-        allow_null=True, required=False
+        
     )
     location_code = serializers.SlugRelatedField(
         slug_field='location_code',
         queryset=Locations.objects.all(),
-        allow_null=True, required=False
+        
     )
 
     class Meta:
@@ -231,12 +240,12 @@ class EquipmentSerializer(serializers.ModelSerializer):
     farmer_code = serializers.SlugRelatedField(
         slug_field='farmer_code',
         queryset=FarmerProfiles.objects.all(),
-        allow_null=True, required=False
+        
     )
     category_code = serializers.SlugRelatedField(
         slug_field='category_code',
         queryset=EquipmentCategories.objects.all(),
-        allow_null=True, required=False
+        
     )
 
     class Meta:
@@ -310,3 +319,72 @@ class EquipmentSerializer(serializers.ModelSerializer):
             except Exception:
                 return None
         return None
+
+
+
+# Booking and payment
+
+class BookingsSerializer(serializers.ModelSerializer):
+    equipment_code = serializers.SlugRelatedField(slug_field='equipment_code', read_only=True)
+    farmer_code = serializers.SlugRelatedField(slug_field='farmer_code', read_only=True)
+    equipment_name = serializers.CharField(source='equipment_code.equipment_name', read_only=True)
+    farmer_name = serializers.CharField(source='farmer_code.user_code.full_name', read_only=True)
+
+    # derived fields (no extra DB columns needed)
+    platform_fee = serializers.SerializerMethodField()
+    payment_status = serializers.SerializerMethodField()
+    payment_gateway = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Bookings
+        fields = [
+            'booking_code', 'equipment_code', 'equipment_name', 'farmer_code', 'farmer_name',
+            'booking_date', 'start_date', 'end_date',
+            'rental_duration', 'rental_duration_unit',
+            'rental_amount', 'security_deposit', 'delivery_charge', 'platform_fee', 'total_amount',
+            'delivery_address', 'booking_status', 'remarks',
+            'payment_status', 'payment_gateway',
+            'createdon', 'updatedon',
+        ]
+
+    def get_platform_fee(self, obj):
+        # total = rental + deposit + delivery + fee   ->   fee = what is left over
+        fee = obj.total_amount - obj.rental_amount - (obj.security_deposit or 0) - (obj.delivery_charge or 0)
+        return str(money(fee))
+
+    def get_payment_status(self, obj):
+        payment = latest_payment(obj)
+        return payment.payment_status if payment else None
+
+    def get_payment_gateway(self, obj):
+        payment = latest_payment(obj)
+        return payment.payment_gateway if payment else None
+
+
+class PaymentsSerializer(serializers.ModelSerializer):
+    booking_code = serializers.SlugRelatedField(slug_field='booking_code', read_only=True)
+    farmer_code = serializers.SlugRelatedField(slug_field='farmer_code', read_only=True)
+
+    class Meta:
+        model = Payments
+        # razorpay_signature is intentionally NOT exposed
+        fields = [
+            'payment_code', 'booking_code', 'farmer_code', 'payment_gateway',
+            'razorpay_order_id', 'razorpay_payment_id', 'payment_amount',
+            'payment_method', 'payment_status', 'transaction_date',
+            'refund_amount', 'refund_date', 'remarks', 'createdon',
+        ]
+
+
+class ReviewsSerializer(serializers.ModelSerializer):
+    booking_code = serializers.SlugRelatedField(slug_field='booking_code', read_only=True)
+    equipment_code = serializers.SlugRelatedField(slug_field='equipment_code', read_only=True)
+    farmer_code = serializers.SlugRelatedField(slug_field='farmer_code', read_only=True)
+    farmer_name = serializers.CharField(source='farmer_code.user_code.full_name', read_only=True)
+
+    class Meta:
+        model = Reviews
+        fields = [
+            'review_code', 'booking_code', 'equipment_code', 'farmer_code', 'farmer_name',
+            'rating', 'review_comment', 'status', 'createdon',
+        ]
