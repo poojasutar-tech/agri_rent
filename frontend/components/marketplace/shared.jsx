@@ -115,9 +115,11 @@ export function FlowHeader({ active }) {
     <header className="flow-header">
       <Link href="/" className="flow-brand">
         <span>
-          <Sprout size={19} />
+          <Sprout size={20} strokeWidth={2.0} />
         </span>
-        agrirent
+        <span className="flow-brand-text">
+          agri<span>rent</span>
+        </span>
       </Link>
       <button
         className="flow-menu-toggle"

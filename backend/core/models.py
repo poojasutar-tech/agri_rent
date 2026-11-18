@@ -23,6 +23,56 @@ class Users(models.Model):
         managed = False
         db_table = 'users'
 
+class EngineModule(models.Model):
+    module_code = models.CharField(unique=True, max_length=20)
+    module_name = models.CharField(max_length=60, blank=True, null=True)
+    url = models.CharField(max_length=60, blank=True, null=True)
+    icon = models.CharField(max_length=1000, blank=True, null=True)
+    status = models.IntegerField(blank=True, null=True)
+    createdon = models.DateTimeField(blank=True, null=True)
+    createdby = models.IntegerField(blank=True, null=True)
+    updatedon = models.DateTimeField(blank=True, null=True)
+    updatedby = models.IntegerField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'engine_module'
+
+
+class Permissions(models.Model):
+    role = models.CharField(max_length=6)
+    module_code = models.ForeignKey(EngineModule, models.DO_NOTHING, db_column='module_code', to_field='module_code')
+    e_read = models.IntegerField()
+    e_write = models.IntegerField()
+    e_update = models.IntegerField()
+    e_delete = models.IntegerField()
+    status = models.IntegerField(blank=True, null=True, db_comment='1=Active, 0=Inactive')
+    createdon = models.DateTimeField(blank=True, null=True)
+    createdby = models.IntegerField(blank=True, null=True)
+    updatedon = models.DateTimeField(blank=True, null=True)
+    updatedby = models.IntegerField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'permissions'
+
+
+class Settings(models.Model):
+    setting_id = models.IntegerField(blank=True, null=True)
+    setting_name = models.CharField(max_length=100, blank=True, null=True)
+    module_code = models.ForeignKey(EngineModule, models.DO_NOTHING, db_column='module_code', to_field='module_code', blank=True, null=True)
+    setting_value = models.CharField(max_length=45, blank=True, null=True)
+    setting_value2 = models.CharField(max_length=255, blank=True, null=True)
+    used_for = models.CharField(max_length=100, blank=True, null=True)
+    createdon = models.DateTimeField(blank=True, null=True)
+    createdby = models.IntegerField(blank=True, null=True)
+    updatedon = models.DateTimeField(blank=True, null=True)
+    updatedby = models.IntegerField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'settings'
+
 
 class Countries(models.Model):
     country_code = models.CharField(unique=True, max_length=45)

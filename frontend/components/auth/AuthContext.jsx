@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useState, useEffect, useCallback } from "react";
-import api from "../utils/domain"; // Adjust path if needed based on your Next.js directory structure
+import api from "../../app/utils/domain"; // Adjust path if needed based on your Next.js directory structure
 
 const AuthContext = createContext(null);
 

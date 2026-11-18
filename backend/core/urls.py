@@ -8,9 +8,9 @@ urlpatterns = [
     
     path('api/', getRoutes),
     
-    path("api/admin-login/", LoginView.as_view(), name="admin-login"),
-    path("api/admin-register/", RegisterView.as_view(), name="admin-register"),
-    
+    path('api/admin-login/', AdminLoginView.as_view(), name='admin-login'),
+    path('api/admin-register/', AdminRegisterView.as_view(), name='admin-register'),
+        
     
     
     path('api/auth/register/', RegisterView.as_view(), name='auth_register'),
@@ -20,6 +20,15 @@ urlpatterns = [
     path('api/users/create/', UsersCreateView.as_view(), name='users-create'),
     path('api/users/update/<str:user_code>/', UsersUpdateView.as_view(), name='users-update'),
     path('api/users/delete/<str:user_code>/', UsersDeleteView.as_view(), name='users-delete'),
+    
+    path('api/routes/', FrontendRoutesView.as_view(), name='frontend-routes'),
+    
+    path("api/engine-module/", EngineModuleListView.as_view()),
+    path("api/engine-module/create/", EngineModuleCreateView.as_view()),
+    path("api/engine-module/<str:module_code>/", EngineModuleDetailView.as_view()),
+    path("api/engine-module/update/<str:module_code>/", EngineModuleUpdateView.as_view()),
+    path("api/engine-module/delete/<str:module_code>/", EngineModuleDeleteView.as_view()),
+
     
     path('api/countries/', CountriesListView.as_view(), name='countries-list'),
     path('api/countries/create/', CountriesCreateView.as_view(), name='countries-create'),  
@@ -57,4 +66,20 @@ urlpatterns = [
     path('api/equipment/create/', EquipmentCreateView.as_view(), name='equipment-create'),
     path('api/equipment/update/<str:equipment_code>/', EquipmentUpdateView.as_view(), name='equipment-update'),
     path('api/equipment/delete/<str:equipment_code>/', EquipmentDeleteView.as_view(), name='equipment-delete'),
+    
+    
+    path('api/bookings/', BookingsListView.as_view(), name='bookings-list'),
+    path('api/bookings/create/', BookingsCreateView.as_view(), name='bookings-create'),
+    path('api/bookings/detail/<str:booking_code>/', BookingsDetailView.as_view(), name='bookings-detail'),
+    path('api/bookings/status/<str:booking_code>/', BookingStatusUpdateView.as_view(), name='bookings-status'),
+
+    path('api/payments/razorpay/create-order/', RazorpayCreateOrderView.as_view(), name='razorpay-create-order'),
+    path('api/payments/razorpay/verify/', RazorpayVerifyView.as_view(), name='razorpay-verify'),
+    path('api/payments/cash/', CashPaymentView.as_view(), name='payments-cash'),
+
+    path('api/reviews/', ReviewsListView.as_view(), name='reviews-list'),
+    path('api/reviews/create/', ReviewsCreateView.as_view(), name='reviews-create'),
+    
+    
+    
 ]

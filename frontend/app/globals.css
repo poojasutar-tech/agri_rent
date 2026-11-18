@@ -2118,7 +2118,8 @@ td > b {
 }
 .flow-brand,
 .auth-art-brand {
-  display: flex;
+  display: inline-flex;
+  flex-direction: row;
   align-items: center;
   gap: 9px;
   color: #1f3828;
@@ -2126,15 +2127,40 @@ td > b {
   font-weight: 700;
   letter-spacing: -0.7px;
   text-decoration: none;
+  white-space: nowrap;
+  width: max-content;
+  flex-shrink: 0;
 }
-.flow-brand > span {
+
+/* Logo icon */
+.flow-brand > span:first-child {
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
+  width: 45px;
+  height: 36px;
+  flex-shrink: 0;
   border-radius: 10px;
   color: #187748;
   background: #e9f5ed;
+}
+
+/* Logo text */
+.flow-brand-text {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  font-size: 23px;
+  font-weight: 600;
+  letter-spacing: -1.2px;
+  line-height: 1;
+  color: #187748;
+  font-style: italic;
+}
+
+.flow-brand-text span {
+  display: inline;
+  color: #16a34a;
 }
 .flow-header nav {
   display: flex;
@@ -2144,7 +2170,7 @@ td > b {
 .flow-header nav a {
   color: #68746c;
   text-decoration: none;
-  font-size: 11px;
+  font-size: 28px;
   font-weight: 600;
 }
 .flow-header nav a:hover,
@@ -5432,3 +5458,8 @@ a.ent-contact-card:hover .ent-cat-icon { background: var(--emerald); color: #fff
   color: #ef4444; /* Tailwind's rose-500 */
   font-weight: bold;
 }
+
+
+/* logo css */
+
+

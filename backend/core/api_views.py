@@ -42,6 +42,29 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework import status
 
+
+from datetime import date, datetime, time
+from decimal import Decimal
+
+import razorpay
+from django.conf import settings
+from django.db import transaction
+from django.utils import timezone
+from rest_framework import status
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from .booking_helpers import (
+    PLATFORM_FEE_PERCENT, MAX_RENTAL_DAYS,
+    next_code, make_dt, money, razorpay_client, log_status, error, latest_payment,
+)
+from .models import (
+    Bookings, BookingStatusHistory, Payments, Reviews,
+    Equipment, FarmerProfiles, Users,
+)
+from .serializers import BookingsSerializer, PaymentsSerializer, ReviewsSerializer
+
 # admin login and register
 
 
@@ -77,192 +100,380 @@ class CredentialsProvidedPermission(permissions.BasePermission):
         return bool(username and password)
 
 
+from django.db.models import Q
+from django.contrib.auth.hashers import check_password, make_password
+from django.utils import timezone
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.permissions import AllowAny
+from rest_framework_simplejwt.tokens import RefreshToken
+import logging
 
-class LoginView(APIView):
+logger = logging.getLogger(__name__)
+class AdminLoginView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []  # Prevents stale JWT headers from causing 401
 
     def post(self, request):
-        username = request.data.get("username")
+        login_id = request.data.get("username") or request.data.get("email")
         password = request.data.get("password")
+
+        if not login_id or not password:
+            return Response(
+                {"error": "Username/Email and password are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         try:
             user = Users.objects.get(
-                username=username,
-                status=1
+                Q(email=login_id) | Q(user_code=login_id) | Q(mobile=login_id) | Q(full_name=login_id),
+                status=1  # 1 = Active
             )
         except Users.DoesNotExist:
             return Response(
-                {
-                    "error": "User not found or inactive"
-                },
+                {"error": "Admin account not found or inactive"},
                 status=status.HTTP_401_UNAUTHORIZED
             )
-
-        # Check encrypted password
-        if not check_password(password, user.password):
+        except Users.MultipleObjectsReturned:
             return Response(
-                {
-                    "error": "Invalid password"
-                },
-                status=status.HTTP_401_UNAUTHORIZED
+                {"error": "Multiple users found with this identifier. Please use email."},
+                status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Get User Type Name
-        usertype_name = None
+        # Restrict portal login strictly to ADMIN accounts
+        if user.role != "ADMIN":
+            return Response(
+                {"error": "Access denied. Admin privileges required."},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
-        if user.usertype_code:
-            try:
-                usertype = UsertypeMaster.objects.get(
-                    usertype_code=user.usertype_code
-                )
-                usertype_name = usertype.usertype_name
-
-            except UsertypeMaster.DoesNotExist:
-                pass
+        # Check encrypted password against password_hash
+        if not check_password(password, user.password_hash):
+            return Response(
+                {"error": "Invalid password"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
 
         # Session Management
-        request.session["user_id"] = user.user_id
-        request.session["username"] = user.username
-        request.session["usertype_code"] = user.usertype_code
+        request.session["user_id"] = user.id
+        request.session["user_code"] = user.user_code
+        request.session["role"] = user.role
         request.session["login_time"] = str(timezone.now())
         request.session.save()
 
-        # Update Last Visit
-        user.lastvisiton = timezone.now()
-        user.save(update_fields=["lastvisiton"])
+        # Update Last Login
+        user.last_login = timezone.now()
+        user.save(update_fields=["last_login"])
 
         # JWT Token
         refresh = RefreshToken.for_user(user)
 
-        # Permissions
+        # Permissions mapped by role and module_code
         permissions_response = {
-            "modules": {},
-            "submodules": {},
-            "activities": {}
+            "modules": {}
         }
 
-        if user.usertype_code:
+        if user.role:
             try:
-                all_permissions = Permissions.objects.filter(
-                    usertype_code=user.usertype_code
-                )
+                all_permissions = Permissions.objects.filter(role=user.role, status=1)
 
                 for p in all_permissions:
-
                     perm_dict = {
                         "e_read": p.e_read,
                         "e_write": p.e_write,
-                        "e_update": p.e_update
+                        "e_update": p.e_update,
+                        "e_delete": p.e_delete
                     }
-
-                    if p.activity_code:
-                        permissions_response["activities"][
-                            p.activity_code
-                        ] = perm_dict
-
-                    elif p.submodule_code:
-                        permissions_response["submodules"][
-                            p.submodule_code
-                        ] = perm_dict
-
-                    elif p.module_code:
-                        permissions_response["modules"][
-                            p.module_code
-                        ] = perm_dict
+                    module_key = p.module_code.module_code if hasattr(p.module_code, 'module_code') else str(p.module_code)
+                    permissions_response["modules"][module_key] = perm_dict
 
             except Exception as e:
-                logger.error(
-                    f"Error fetching permissions: {str(e)}"
-                )
-        
+                logger.error(f"Error fetching permissions: {str(e)}")
+
         domain = None
         try:
             domain_setting = Settings.objects.get(setting_name="domain")
             domain = domain_setting.setting_value
-        except Settings.DoesNotExist:
+        except Exception:
             pass
 
-        # Final Response
+        # Final Response (Matches AuthContext.jsx & AdminLoginPage)
         response_data = {
             "access": str(refresh.access_token),
             "refresh": str(refresh),
-            "username": user.username,
-            "user_id": user.user_id,
-            "usertype_code": user.usertype_code,
-            "usertype_name": usertype_name,
-            "company_code": user.company_code,
-            "employee_code": user.employee_code,
+            "user_code": user.user_code,
+            "full_name": user.full_name,
+            "email": user.email,
+            "role": user.role,
             "status": user.status,
             "permission_details": permissions_response,
             "domain": domain
         }
 
-        # Return doctor_code only for doctors
-        if user.usertype_code == "DOC":
-            response_data["doctor_code"] = user.doctor_code
+        return Response(response_data, status=status.HTTP_200_OK)
 
-        return Response(
-            response_data,
-            status=status.HTTP_200_OK
-        )
 
-class RegisterView(APIView):
-    permission_classes = [AllowAny] 
+class AdminRegisterView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []  # Prevents stale JWT headers from causing 401
 
     def post(self, request):
         data = request.data
-        username = data.get("username")
+        email = data.get("email")
         password = data.get("password")
+        full_name = data.get("username") or data.get("full_name")
+        mobile = data.get("mobile_no") or data.get("mobile") or "-"
+        role = "ADMIN"  # Explicitly assign ADMIN role
 
-        if not username or not password:
-            return Response({"error": "Username and password required"}, status=status.HTTP_400_BAD_REQUEST)
+        if not email or not password or not full_name:
+            return Response(
+                {"error": "Username, email, and password are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        if Users.objects.filter(username=username).exists():
-            return Response({"error": "Username already exists"}, status=status.HTTP_400_BAD_REQUEST)
+        if Users.objects.filter(email=email).exists():
+            return Response({"error": "Email already exists"}, status=status.HTTP_400_BAD_REQUEST)
 
-        max_id = Users.objects.aggregate(Max('user_id'))['user_id__max']
-        next_user_id = (max_id or 0) + 1 
+        if mobile != "-" and Users.objects.filter(mobile=mobile).exists():
+            return Response({"error": "Mobile number already exists"}, status=status.HTTP_400_BAD_REQUEST)
 
-        create_params = {
-            "user_id": next_user_id,
-            "status": 1,
-            "superuser": 0,
-            "createdon": timezone.now(),
-            "lastvisiton": timezone.now(),
-        }
-
-        fk_fields = ['company_code', 'usertype_code', 'employee_code']
-
-        for key, value in data.items():
-            if value is not None and value != "":
-                if key == 'password':
-                    create_params['password'] = make_password(value)
-                elif key in fk_fields:
-                    create_params[f"{key}_id"] = value
-                else:
-                    create_params[key] = value
-
-        if not create_params.get("createdby"):
-            create_params["createdby"] = next_user_id
+        # Generate unique user_code
+        last_user = Users.objects.order_by('-id').first()
+        next_id = (last_user.id + 1) if last_user else 1
+        user_code = f"USR-{next_id:04d}"
 
         try:
-            user = Users.objects.create(**create_params)
+            user = Users.objects.create(
+                user_code=user_code,
+                full_name=full_name,
+                email=email,
+                mobile=mobile,
+                password_hash=make_password(password),
+                role=role,
+                status=1,  # Active
+                email_verified=0,
+                mobile_verified=0,
+                createdon=timezone.now()
+            )
+            user.createdby = user.id
+            user.save(update_fields=["createdby"])
+
             refresh = RefreshToken.for_user(user)
 
             return Response({
-                "message": "User registered successfully",
-                "user_id": user.user_id,
-                "username": user.username,
-                "createdon": user.createdon,
+                "message": "Admin registered successfully",
+                "user_code": user.user_code,
+                "full_name": user.full_name,
+                "email": user.email,
+                "role": user.role,
                 "access": str(refresh.access_token),
                 "refresh": str(refresh)
             }, status=status.HTTP_201_CREATED)
-            
+
         except Exception as e:
             return Response({"error": f"Database Error: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        
+# Routes for engine module
+
+import os
+from pathlib import Path
+from django.conf import settings
+from rest_framework.views import APIView
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+
+class FrontendRoutesView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        # Points to F:\agri_rent\frontend\app
+        frontend_app_dir = Path(settings.BASE_DIR).parent / "frontend" / "app"
+        routes = []
+
+        if frontend_app_dir.exists():
+            for root, dirs, files in os.walk(frontend_app_dir):
+                # Skip internal Next.js folders or dynamic [id] folders if needed
+                if "page.jsx" in files or "page.js" in files:
+                    rel_path = os.path.relpath(root, frontend_app_dir).replace("\\", "/")
+                    if rel_path == ".":
+                        route_path = "/"
+                        label = "Home"
+                    else:
+                        route_path = f"/{rel_path}"
+                        # Format 'admin/engineModules' -> 'Admin - Engine Modules'
+                        label = rel_path.split("/")[-1].replace("-", " ").replace("_", " ").title()
+
+                    routes.append({
+                        "label": label,
+                        "path": route_path
+                    })
+
+        return Response({"routes": routes})
+
+# Engine Module
+
+from django.db import transaction, IntegrityError
+from django.http import Http404
+from django.shortcuts import get_object_or_404
+from rest_framework import permissions, status
+# Make sure to import your CustomJWTAuthentication, SessionAuthentication, EngineModuleSerializer, etc.
+
+class EngineModuleCreateView(APIView):
 
 
+    def post(self, request):
+        try:
+            with transaction.atomic():
+                data = request.data.copy()
+                permissions_data = data.pop("permissions", {}) # Expected format: { "ADMIN": { "read": 1, "write": 1, ... }, "FARMER": { ... } }
 
+                serializer = EngineModuleSerializer(data=data)
+                if serializer.is_valid():
+                    module = serializer.save(createdby=request.user.id)
+                    
+                    # Loop through roles and assign permissions
+                    for role_name, perms in permissions_data.items():
+                        Permissions.objects.create(
+                            role=role_name,
+                            module_code=module, # Assigns the EngineModule instance (mapped via module_code field)
+                            e_read=1 if perms.get("read") or perms.get("e_read") else 0,
+                            e_write=1 if perms.get("write") or perms.get("e_write") else 0,
+                            e_update=1 if perms.get("update") or perms.get("e_update") else 0,
+                            e_delete=1 if perms.get("delete") or perms.get("e_delete") else 0,
+                            status=1
+                        )
+
+                    return Response(serializer.data, status=status.HTTP_201_CREATED)
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class EngineModuleListView(APIView):
+
+
+    def get(self, request):
+        try:
+            modules = EngineModule.objects.all().order_by('id')
+            result = []
+
+            for module in modules:
+                module_data = EngineModuleSerializer(module).data
+
+                # Fetch permissions for this module by module_code
+                perms = Permissions.objects.filter(module_code=module.module_code)
+                permissions_dict = {}
+
+                for perm in perms:
+                    permissions_dict[perm.role] = {
+                        "read": perm.e_read == 1,
+                        "write": perm.e_write == 1,
+                        "update": perm.e_update == 1,
+                        "delete": perm.e_delete == 1
+                    }
+
+                module_data['permissions'] = permissions_dict
+                result.append(module_data)
+
+            return Response(result, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+       
+
+class EngineModuleDetailView(APIView):
+
+
+    def get(self, request, module_code, format=None):
+        module = get_object_or_404(EngineModule, module_code=module_code)
+        module_data = EngineModuleSerializer(module).data
+
+        # Fetch permissions for this module
+        perms = Permissions.objects.filter(module_code=module.module_code)
+        permissions_dict = {}
+
+        for perm in perms:
+            permissions_dict[perm.role] = {
+                "read": perm.e_read == 1,
+                "write": perm.e_write == 1,
+                "update": perm.e_update == 1,
+                "delete": perm.e_delete == 1
+            }
+
+        module_data['permissions'] = permissions_dict
+        return Response(module_data, status=status.HTTP_200_OK)
+
+
+class EngineModuleUpdateView(APIView):
+
+
+    def put(self, request, module_code):
+        try:
+            with transaction.atomic():
+                module = get_object_or_404(EngineModule, module_code=module_code)
+                data = request.data.copy()
+                permissions_provided = "permissions" in data
+                permissions_data = data.pop("permissions", None)
+                if permissions_provided and not isinstance(permissions_data, dict):
+                    return Response(
+                        {"error": "Permissions must be an object keyed by role."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                serializer = EngineModuleSerializer(module, data=data, partial=True)
+                if serializer.is_valid():
+                    serializer.save(
+                        updatedby=request.user.id,
+                        updatedon=timezone.now()
+                    )
+
+                    if permissions_provided:
+                        Permissions.objects.filter(module_code=module.module_code).delete()
+
+                        for role_name, perms in permissions_data.items():
+                            Permissions.objects.create(
+                                role=role_name,
+                                module_code=module,
+                                e_read=1 if perms.get("read") or perms.get("e_read") else 0,
+                                e_write=1 if perms.get("write") or perms.get("e_write") else 0,
+                                e_update=1 if perms.get("update") or perms.get("e_update") else 0,
+                                e_delete=1 if perms.get("delete") or perms.get("e_delete") else 0,
+                                status=1
+                            )
+
+                    return Response(serializer.data, status=status.HTTP_200_OK)
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+ 
+ 
+class EngineModuleDeleteView(APIView):
+
+ 
+    def delete(self, request, module_code):
+        try:
+            with transaction.atomic():
+                module = get_object_or_404(EngineModule, module_code=module_code)
+                Permissions.objects.filter(module_code=module_code).delete()
+                Settings.objects.filter(module_code=module_code).delete()
+                module.delete()
+ 
+            return Response(status=status.HTTP_204_NO_CONTENT)
+ 
+        except Http404:
+            return Response({"error": "Module not found"}, status=status.HTTP_404_NOT_FOUND)
+        except IntegrityError:
+            return Response({"error": "Cannot delete module due to existing constraints or relations"}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 # User Login and Register
 
@@ -1012,3 +1223,478 @@ class EquipmentDeleteView(APIView):
             return Response({"message": "Equipment deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR) 
+        
+        
+        
+        
+        
+        
+
+# =====================================================================
+#  BOOKING VIEWS
+# =====================================================================
+def _booking_queryset():
+    return Bookings.objects.select_related(
+        'equipment_code__farmer_code__user_code', 'farmer_code__user_code'
+    )
+
+
+class BookingsListView(APIView):
+    """
+    GET api/bookings/?user_code=USR001     -> bookings MADE by this user (renter)
+    GET api/bookings/?owner_code=USR002    -> bookings for machines OWNED by this user
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        try:
+            qs = _booking_queryset().order_by('-id')
+            user_code = request.query_params.get('user_code')
+            owner_code = request.query_params.get('owner_code')
+            if user_code:
+                qs = qs.filter(farmer_code__user_code=user_code)
+            if owner_code:
+                qs = qs.filter(equipment_code__farmer_code__user_code=owner_code)
+            return Response(BookingsSerializer(qs, many=True).data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class BookingsDetailView(APIView):
+    """GET api/bookings/detail/<booking_code>/?user_code=USR001   (renter or machine owner only)"""
+    permission_classes = [AllowAny]
+
+    def get(self, request, booking_code):
+        booking = _booking_queryset().filter(booking_code=booking_code).first()
+        if not booking:
+            return error("Booking not found.", status.HTTP_404_NOT_FOUND)
+
+        user_code = request.query_params.get('user_code')
+        renter = booking.farmer_code.user_code_id
+        owner = booking.equipment_code.farmer_code.user_code_id
+        if user_code not in (renter, owner):
+            return error("You cannot view this booking.", status.HTTP_403_FORBIDDEN)
+
+        return Response(BookingsSerializer(booking).data, status=status.HTTP_200_OK)
+
+
+class BookingsCreateView(APIView):
+    """
+    POST api/bookings/create/
+    body: { user_code, equipment_code, start_date, end_date, service_type, delivery_address, remarks }
+    Dates are "YYYY-MM-DD" and INCLUSIVE (21 Oct -> 23 Oct = 3 days).
+    Every amount is calculated HERE from the machine price - never trusted from the browser.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        try:
+            data = request.data
+
+            # ---- 1. dates ----
+            try:
+                start_day = datetime.strptime(str(data.get('start_date')), "%Y-%m-%d").date()
+                end_day = datetime.strptime(str(data.get('end_date')), "%Y-%m-%d").date()
+            except (TypeError, ValueError):
+                return error("Valid start_date and end_date (YYYY-MM-DD) are required.")
+
+            if start_day < date.today():
+                return error("Start date cannot be in the past.")
+            if end_day < start_day:
+                return error("Return date cannot be before the start date.")
+            days = (end_day - start_day).days + 1
+            if days > MAX_RENTAL_DAYS:
+                return error(f"You can rent for at most {MAX_RENTAL_DAYS} days.")
+
+            # ---- 2. machine ----
+            equipment = Equipment.objects.filter(
+                equipment_code=data.get('equipment_code'), status=1
+            ).first()
+            if not equipment:
+                return error("Equipment not found.", status.HTTP_404_NOT_FOUND)
+            if (equipment.availability_status or 'AVAILABLE') != 'AVAILABLE':
+                return error("This machine is not available right now.")
+
+            # ---- 3. the renting farmer (looked up from the logged-in user_code) ----
+            farmer = FarmerProfiles.objects.select_related('user_code').filter(
+                user_code=data.get('user_code')
+            ).first()
+            if not farmer:
+                return error("No farmer profile found for this user.")
+            if equipment.farmer_code_id == farmer.farmer_code:
+                return error("You cannot book your own machine.")
+
+            # ---- 4. amounts ----
+            rental_amount = money(Decimal(equipment.rental_price_per_day) * days)
+            security_deposit = money(equipment.security_deposit or 0)
+            delivery_charge = money(0)  # no delivery price list yet
+            platform_fee = money(rental_amount * PLATFORM_FEE_PERCENT / 100)
+            total_amount = rental_amount + security_deposit + delivery_charge + platform_fee
+
+            start_dt = make_dt(start_day, time.min)       # 00:00 on the first day
+            end_dt = make_dt(end_day, time(23, 59, 59))   # end of the last day
+
+            service_type = (data.get('service_type') or '').strip()
+            notes = (data.get('remarks') or '').strip()
+            remarks = (f"[{service_type}] {notes}").strip() if service_type else notes
+
+            # ---- 5. save (lock the machine row so two people cannot take the same dates) ----
+            with transaction.atomic():
+                Equipment.objects.select_for_update().get(module_code=equipment.module_code)
+
+                clash = Bookings.objects.filter(
+                    equipment_code=equipment,
+                    booking_status__in=['PENDING', 'CONFIRMED'],
+                    start_date__lt=end_dt,
+                    end_date__gt=start_dt,
+                ).exists()
+                if clash:
+                    return error("These dates are already booked. Please choose other dates.",
+                                 status.HTTP_409_CONFLICT)
+
+                booking = Bookings.objects.create(
+                    booking_code=next_code(Bookings, 'booking_code', 'BK'),
+                    equipment_code=equipment,
+                    farmer_code=farmer,
+                    booking_date=timezone.now(),
+                    start_date=start_dt,
+                    end_date=end_dt,
+                    rental_duration=days,
+                    rental_duration_unit='DAY',
+                    rental_amount=rental_amount,
+                    security_deposit=security_deposit,
+                    delivery_charge=delivery_charge,
+                    total_amount=total_amount,
+                    delivery_address=(data.get('delivery_address') or '').strip() or None,
+                    booking_status='PENDING',
+                    remarks=remarks or None,
+                    createdon=timezone.now(),
+                    createdby=farmer.user_code.id,
+                )
+                log_status(booking, None, 'PENDING', 'Booking created', user=farmer.user_code)
+
+            booking = _booking_queryset().get(pk=booking.pk)
+            return Response(BookingsSerializer(booking).data, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class BookingStatusUpdateView(APIView):
+    """
+    PUT api/bookings/status/<booking_code>/
+    body: { user_code, status: CONFIRMED | REJECTED | CANCELLED | COMPLETED, remarks }
+
+      Machine owner (or an ADMIN user): PENDING -> CONFIRMED / REJECTED / CANCELLED
+                                        CONFIRMED -> COMPLETED / CANCELLED
+      Renter:                           PENDING -> CANCELLED   (own booking only)
+
+    REJECTED / CANCELLED automatically refunds an online (Razorpay) payment.
+    COMPLETED marks a pending cash payment as SUCCESS (cash was collected).
+    """
+    permission_classes = [AllowAny]
+
+    ALLOWED = {
+        'PENDING': ['CONFIRMED', 'REJECTED', 'CANCELLED'],
+        'CONFIRMED': ['COMPLETED', 'CANCELLED'],
+    }
+
+    def put(self, request, booking_code):
+        try:
+            new_status = (request.data.get('status') or '').upper()
+            remarks = request.data.get('remarks')
+
+            booking = _booking_queryset().filter(booking_code=booking_code).first()
+            if not booking:
+                return error("Booking not found.", status.HTTP_404_NOT_FOUND)
+
+            actor = Users.objects.filter(user_code=request.data.get('user_code')).first()
+            if not actor:
+                return error("User not found.", status.HTTP_403_FORBIDDEN)
+
+            old_status = booking.booking_status
+            if new_status not in self.ALLOWED.get(old_status, []):
+                return error(f"A {old_status} booking cannot be changed to {new_status}.")
+
+            is_admin = (actor.role or '').upper() == 'ADMIN'
+            is_owner = booking.equipment_code.farmer_code.user_code_id == actor.user_code
+            is_renter = booking.farmer_code.user_code_id == actor.user_code
+            renter_cancelling = is_renter and old_status == 'PENDING' and new_status == 'CANCELLED'
+            if not (is_admin or is_owner or renter_cancelling):
+                return error("You are not allowed to do this.", status.HTTP_403_FORBIDDEN)
+
+            # ---- refund an online payment BEFORE touching our database ----
+            paid_online = None
+            if new_status in ('REJECTED', 'CANCELLED'):
+                paid_online = Payments.objects.filter(
+                    booking_code=booking, payment_gateway='RAZORPAY', payment_status='SUCCESS'
+                ).first()
+                if paid_online and paid_online.razorpay_payment_id:
+                    try:
+                        razorpay_client().payment.refund(
+                            paid_online.razorpay_payment_id,
+                            {"amount": int((paid_online.payment_amount * 100).to_integral_value())},
+                        )
+                    except Exception as refund_error:
+                        return error(f"Refund failed, booking not changed: {refund_error}",
+                                     status.HTTP_502_BAD_GATEWAY)
+
+            with transaction.atomic():
+                now = timezone.now()
+
+                if paid_online:
+                    paid_online.payment_status = 'REFUNDED'
+                    paid_online.refund_amount = paid_online.payment_amount
+                    paid_online.refund_date = now
+                    paid_online.updatedon = now
+                    paid_online.save()
+
+                cash = Payments.objects.filter(
+                    booking_code=booking, payment_gateway='CASH', payment_status='PENDING'
+                ).first()
+                if cash and new_status == 'COMPLETED':
+                    cash.payment_status = 'SUCCESS'
+                    cash.transaction_date = now
+                    cash.updatedon = now
+                    cash.save()
+                elif cash and new_status in ('REJECTED', 'CANCELLED'):
+                    cash.payment_status = 'FAILED'
+                    cash.updatedon = now
+                    cash.save()
+
+                booking.booking_status = new_status
+                booking.updatedon = now
+                booking.updatedby = actor.id
+                booking.save(update_fields=['booking_status', 'updatedon', 'updatedby'])
+                log_status(booking, old_status, new_status, remarks or f"Status changed to {new_status}",
+                           user=actor)
+
+            return Response(BookingsSerializer(booking).data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# =====================================================================
+#  PAYMENT VIEWS  (Razorpay online  +  Cash)
+# =====================================================================
+def _get_payable_booking(booking_code, user_code):
+    """
+    Returns (booking, error_response).
+    Payable = belongs to this user, still PENDING and not already paid.
+    """
+    booking = _booking_queryset().filter(booking_code=booking_code).first()
+    if not booking:
+        return None, error("Booking not found.", status.HTTP_404_NOT_FOUND)
+    if booking.farmer_code.user_code_id != user_code:
+        return None, error("This is not your booking.", status.HTTP_403_FORBIDDEN)
+    if booking.booking_status != 'PENDING':
+        return None, error(f"This booking is already {booking.booking_status}.")
+    if Payments.objects.filter(booking_code=booking, payment_status='SUCCESS').exists():
+        return None, error("This booking is already paid.")
+    return booking, None
+
+
+class RazorpayCreateOrderView(APIView):
+    """POST api/payments/razorpay/create-order/   body: { booking_code, user_code }"""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        try:
+            booking, err = _get_payable_booking(
+                request.data.get('booking_code'), request.data.get('user_code')
+            )
+            if err:
+                return err
+
+            if Payments.objects.filter(
+                booking_code=booking, payment_gateway='CASH', payment_status='PENDING'
+            ).exists():
+                return error("Cash payment was already selected for this booking.")
+
+            amount_paise = int((booking.total_amount * 100).to_integral_value())
+
+            order = razorpay_client().order.create({
+                "amount": amount_paise,
+                "currency": "INR",
+                "receipt": booking.booking_code,
+                "payment_capture": 1,
+            })
+
+            with transaction.atomic():
+                Payments.objects.create(
+                    payment_code=next_code(Payments, 'payment_code', 'PAY'),
+                    booking_code=booking,
+                    farmer_code=booking.farmer_code,
+                    payment_gateway='RAZORPAY',
+                    razorpay_order_id=order['id'],
+                    payment_amount=booking.total_amount,
+                    payment_status='PENDING',
+                    createdon=timezone.now(),
+                    createdby=booking.farmer_code.user_code.id,
+                )
+
+            return Response({
+                "order_id": order['id'],
+                "amount": amount_paise,
+                "currency": "INR",
+                "key_id": settings.RAZORPAY_KEY_ID,  # public key - safe to send to the browser
+            }, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class RazorpayVerifyView(APIView):
+    """
+    POST api/payments/razorpay/verify/
+    body: { razorpay_order_id, razorpay_payment_id, razorpay_signature, user_code }
+    The signature check proves the payment is real - never skip it.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        try:
+            order_id = request.data.get('razorpay_order_id')
+            payment_id = request.data.get('razorpay_payment_id')
+            signature = request.data.get('razorpay_signature')
+
+            payment = Payments.objects.select_related(
+                'booking_code__farmer_code__user_code'
+            ).filter(razorpay_order_id=order_id).first()
+            if not payment:
+                return error("Order not found.", status.HTTP_404_NOT_FOUND)
+
+            booking = payment.booking_code
+            if booking.farmer_code.user_code_id != request.data.get('user_code'):
+                return error("This is not your booking.", status.HTTP_403_FORBIDDEN)
+
+            if payment.payment_status == 'SUCCESS':  # verify called twice - already done
+                return Response(PaymentsSerializer(payment).data, status=status.HTTP_200_OK)
+
+            try:
+                razorpay_client().utility.verify_payment_signature({
+                    'razorpay_order_id': order_id,
+                    'razorpay_payment_id': payment_id,
+                    'razorpay_signature': signature,
+                })
+            except razorpay.errors.SignatureVerificationError:
+                payment.payment_status = 'FAILED'
+                payment.save(update_fields=['payment_status'])
+                return error("Payment verification failed.")
+
+            with transaction.atomic():
+                now = timezone.now()
+                payment.razorpay_payment_id = payment_id
+                payment.razorpay_signature = signature
+                payment.payment_status = 'SUCCESS'
+                payment.payment_method = 'ONLINE'
+                payment.transaction_date = now
+                payment.updatedon = now
+                payment.save()
+
+                # booking stays PENDING - the owner still has to approve it
+                log_status(booking, booking.booking_status, booking.booking_status,
+                           'Online payment received', user=booking.farmer_code.user_code)
+
+            return Response(PaymentsSerializer(payment).data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class CashPaymentView(APIView):
+    """POST api/payments/cash/   body: { booking_code, user_code }"""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        try:
+            booking, err = _get_payable_booking(
+                request.data.get('booking_code'), request.data.get('user_code')
+            )
+            if err:
+                return err
+
+            # chose cash earlier? return it again (no duplicate rows)
+            existing = Payments.objects.filter(
+                booking_code=booking, payment_gateway='CASH', payment_status='PENDING'
+            ).first()
+            if existing:
+                return Response(PaymentsSerializer(existing).data, status=status.HTTP_200_OK)
+
+            with transaction.atomic():
+                payment = Payments.objects.create(
+                    payment_code=next_code(Payments, 'payment_code', 'PAY'),
+                    booking_code=booking,
+                    farmer_code=booking.farmer_code,
+                    payment_gateway='CASH',
+                    payment_amount=booking.total_amount,
+                    payment_method='CASH',
+                    payment_status='PENDING',
+                    remarks='Customer will pay in cash',
+                    createdon=timezone.now(),
+                    createdby=booking.farmer_code.user_code.id,
+                )
+                log_status(booking, booking.booking_status, booking.booking_status,
+                           'Cash payment selected', user=booking.farmer_code.user_code)
+
+            return Response(PaymentsSerializer(payment).data, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# =====================================================================
+#  REVIEW VIEWS
+# =====================================================================
+class ReviewsListView(APIView):
+    """GET api/reviews/?equipment_code=EQ000001   (published reviews only)"""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        qs = Reviews.objects.select_related(
+            'booking_code', 'equipment_code', 'farmer_code__user_code'
+        ).filter(status=1).order_by('-id')
+        equipment_code = request.query_params.get('equipment_code')
+        if equipment_code:
+            qs = qs.filter(equipment_code=equipment_code)
+        return Response(ReviewsSerializer(qs, many=True).data, status=status.HTTP_200_OK)
+
+
+class ReviewsCreateView(APIView):
+    """POST api/reviews/create/   body: { user_code, booking_code, rating 1-5, review_comment }"""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        try:
+            data = request.data
+
+            try:
+                rating = int(data.get('rating'))
+            except (TypeError, ValueError):
+                return error("Rating is required.")
+            if rating < 1 or rating > 5:
+                return error("Rating must be between 1 and 5.")
+
+            booking = _booking_queryset().filter(booking_code=data.get('booking_code')).first()
+            if not booking:
+                return error("Booking not found.", status.HTTP_404_NOT_FOUND)
+
+            if booking.farmer_code.user_code_id != data.get('user_code'):
+                return error("You can only review your own bookings.", status.HTTP_403_FORBIDDEN)
+            if booking.booking_status != 'COMPLETED':
+                return error("You can review a booking once the rental is completed.")
+            if Reviews.objects.filter(booking_code=booking).exists():
+                return error("You already reviewed this booking.")
+
+            with transaction.atomic():
+                review = Reviews.objects.create(
+                    review_code=next_code(Reviews, 'review_code', 'REV'),
+                    booking_code=booking,
+                    equipment_code=booking.equipment_code,
+                    farmer_code=booking.farmer_code,
+                    rating=rating,
+                    review_comment=(data.get('review_comment') or '').strip() or None,
+                    status=1,
+                    createdon=timezone.now(),
+                    createdby=booking.farmer_code.user_code.id,
+                )
+
+            return Response(ReviewsSerializer(review).data, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

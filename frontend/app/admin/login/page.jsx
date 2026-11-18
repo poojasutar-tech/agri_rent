@@ -1,145 +1,149 @@
 "use client";
 
 import { useState } from "react";
-import api from "@/utils/domain"; // Adjust path to your domain utility if necessary
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { useAuth } from "@/components/auth/AuthContext"; // Adjust path to your AuthContext
-import { Eye, EyeOff, Lock, User, Loader2, ShieldCheck } from "lucide-react";
+import { Tractor, Lock, User, AlertCircle, ArrowRight, UserPlus } from "lucide-react";
+import api from "../../../src/api";
 
-export default function AdminLogin() {
+export default function AdminLoginPage() {
+  const router = useRouter();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
-  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  
-  const { login } = useAuth();
-  const router = useRouter();
+  const [error, setError] = useState("");
 
-  const handleSubmit = async (e) => {
+  const handleLogin = async (e) => {
     e.preventDefault();
     setError("");
     setLoading(true);
 
     try {
-      const res = await api.post("admin-login/", { username, password });
-      
-      const { access, refresh, ...userData } = res.data;
+      // Updated to call your custom AdminLoginView endpoint
+      const response = await api.post("admin-login/", { username, password });
 
-      if (login) {
-        login(access, refresh, userData); 
+      const token = response.data.access || response.data.token;
+      if (!token) {
+        throw new Error("Token missing in server response");
       }
 
-      router.push("/admin/dashboard");
+      localStorage.setItem("admin_token", token);
+      localStorage.setItem("token", token);
+      if (response.data.refresh) {
+        localStorage.setItem("refresh_token", response.data.refresh);
+      }
+      localStorage.setItem(
+        "admin_user",
+        JSON.stringify({
+          username: response.data.full_name || username,
+          email: response.data.email,
+          user_code: response.data.user_code,
+          role: response.data.role || "Super Admin",
+        })
+      );
+
+      // Redirect to Admin Dashboard
+      router.push("/layouts/dashboard");
     } catch (err) {
-      setError(err.response?.data?.error || "Invalid credentials.");
+      setError(
+        err.response?.data?.error ||
+          err.response?.data?.detail ||
+          err.response?.data?.message ||
+          "Invalid admin credentials. Please try again."
+      );
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen w-full flex items-center justify-center px-4 font-sans transition-colors duration-300 relative" style={{ backgroundColor: "var(--bg-app)" }}>
-      {/* Top accent bar */}
-      <div className="absolute top-0 left-0 w-full h-1" style={{ backgroundColor: "var(--primary-accent)" }} />
-      
-      <div className="max-w-md w-full animate-in fade-in zoom-in-95 duration-500">
-        {/* Compact Header Section */}
-        <div className="text-center mb-6">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl text-white shadow-lg mb-4 transition-transform hover:rotate-3" style={{ backgroundColor: "var(--primary-accent)" }}>
-            <ShieldCheck className="w-7 h-7" />
+    <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 px-4 transition-colors duration-300">
+      <div className="w-full max-w-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xl dark:shadow-2xl p-8">
+        {/* Brand Header */}
+        <div className="flex flex-col items-center text-center mb-8">
+          <div className="w-14 h-14 rounded-2xl bg-emerald-100 dark:bg-emerald-600/20 border border-emerald-200 dark:border-emerald-500/30 flex items-center justify-center text-emerald-600 dark:text-emerald-400 mb-4 shadow-sm">
+            <Tractor className="w-8 h-8" />
           </div>
-          <h2 className="text-2xl font-black tracking-tight uppercase" style={{ color: "var(--text-title)" }}>Admin Portal</h2>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
+            AgriRent Admin Portal
+          </h1>
+          {/* <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+            Sign in to manage fleet, engine modules, and rentals
+          </p> */}
         </div>
 
-        <div className="form-container shadow-2xl overflow-hidden relative">
-          <div className="absolute -top-24 -right-24 w-48 h-48 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none" />
-          
-          {error && (
-            <div className="mb-6 p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-500 text-xs font-bold animate-in slide-in-from-top-2 text-center">
-              {error}
-            </div>
-          )}
-
-          <form onSubmit={handleSubmit} className="space-y-5">
-            {/* Username Input */}
-            <div className="space-y-1.5">
-              <label className="form-label block ml-1 text-sm font-semibold">
-                Username
-              </label>
-              <div className="relative group">
-                <User className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 opacity-40 group-focus-within:opacity-100 transition-opacity" style={{ color: "var(--primary-accent)" }} />
-                <input
-                  type="text"
-                  required
-                  className="form-input w-full pl-12 py-3 rounded-xl border transition-all outline-none"
-                  placeholder="Enter username"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  style={{ colorScheme: "dark" }}
-                />
-              </div>
-            </div>
-
-            {/* Password Input */}
-            <div className="space-y-1.5">
-              <label className="form-label block ml-1 text-sm font-semibold">
-                Password
-              </label>
-              <div className="relative group">
-                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 opacity-40 group-focus-within:opacity-100 transition-opacity" style={{ color: "var(--primary-accent)" }} />
-                <input
-                  type={showPassword ? "text" : "password"}
-                  required
-                  className="form-input w-full pl-12 pr-12 py-3 rounded-xl border transition-all outline-none"
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  style={{ colorScheme: "dark" }}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 opacity-40 hover:opacity-100 transition-opacity"
-                  style={{ color: "var(--text-main)" }}
-                >
-                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
-
-            {/* Submit Button */}
-            <button
-              type="submit"
-              disabled={loading}
-              className="btn-primary w-full flex items-center justify-center py-3.5 mt-4 text-sm font-bold uppercase tracking-widest rounded-xl transition-all shadow-lg active:scale-[0.98]"
-              style={{ backgroundColor: "var(--primary-accent)" }}
-            >
-              {loading ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                  Verifying...
-                </>
-              ) : (
-                "Sign In"
-              )}
-            </button>
-          </form>
-
-          {/* Footer Link */}
-          <div className="mt-8 pt-6 border-t text-center" style={{ borderColor: "var(--border-color)" }}>
-            <p className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>
-              Need administrative access?{" "}
-              <Link 
-                href="/admin/register" 
-                className="font-bold transition-colors hover:underline underline-offset-4"
-                style={{ color: "var(--primary-accent)" }}
-              >
-                Register Account
-              </Link>
-            </p>
+        {/* Error Alert */}
+        {error && (
+          <div className="mb-6 flex items-center gap-2.5 p-3.5 rounded-xl bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800/60 text-red-600 dark:text-red-300 text-sm shadow-sm">
+            <AlertCircle className="w-4 h-4 shrink-0 text-red-500 dark:text-red-400" />
+            <span>{error}</span>
           </div>
+        )}
+
+        {/* Login Form */}
+        <form onSubmit={handleLogin} className="space-y-5">
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-2">
+              Admin Username
+            </label>
+            <div className="relative">
+              <User className="w-4 h-4 text-slate-400 dark:text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                required
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="Enter admin username"
+                className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition shadow-sm"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-2">
+              Password
+            </label>
+            <div className="relative">
+              <Lock className="w-4 h-4 text-slate-400 dark:text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition shadow-sm"
+              />
+            </div>
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold text-sm rounded-xl shadow-lg shadow-emerald-600/20 dark:shadow-emerald-950/50 transition cursor-pointer"
+          >
+            {loading ? (
+              <span>Authenticating...</span>
+            ) : (
+              <>
+                <span>Access Admin Panel</span>
+                <ArrowRight className="w-4 h-4" />
+              </>
+            )}
+          </button>
+        </form>
+
+        {/* Register Account Option Footer */}
+        <div className="mt-8 pt-6 border-t border-slate-100 dark:border-slate-800 text-center">
+          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+            Need an administrator account?{" "}
+            <Link 
+              href="/admin/register" 
+              className="font-bold text-emerald-600 dark:text-emerald-400 transition-colors hover:underline underline-offset-4 inline-flex items-center gap-1"
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              Register Admin
+            </Link>
+          </p>
         </div>
       </div>
     </div>
