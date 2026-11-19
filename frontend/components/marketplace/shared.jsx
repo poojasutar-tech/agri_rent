@@ -54,7 +54,12 @@ export const machines = [
     specs: ["460 HP", "Grain header", "GPS"],
   },
 ];
-export const currency = (value) => `$${Number(value).toLocaleString()}`;
+export const currency = (value) =>
+  new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 2,
+  }).format(Number(value) || 0);
 
 const pageLinks = [
   { label: "Home", href: "/" },
@@ -89,6 +94,8 @@ export function FlowHeader({ active }) {
     localStorage.removeItem("full_name");
     localStorage.removeItem("user_code");
     localStorage.removeItem("user_role");
+    localStorage.removeItem("token");
+    localStorage.removeItem("refresh_token");
     setUserName("");
     router.push("/login");
   };
@@ -326,13 +333,17 @@ export function TextField({
 }
 
 export function MachineCard({ item }) {
-  const detailsHref = `/equipment-details?item=${encodeURIComponent(item.name)}`;
+  const detailsHref = `/equipment-details?code=${encodeURIComponent(item.code || item.id)}`;
+  const available = item.availability === "AVAILABLE";
+  const availabilityLabel = item.availability === "MAINTENANCE"
+    ? "In maintenance"
+    : available ? "Available" : "Occupied";
   return (
     <article className="flow-machine-card">
       <Link href={detailsHref} className="flow-machine-photo">
         <img src={item.image} alt={`${item.name} in the field`} />
-        <span className="flow-available">
-          <i /> Available
+        <span className={`flow-available ${available ? "" : "occupied"}`}>
+          <i /> {availabilityLabel}
         </span>
       </Link>
       <div className="flow-machine-info">

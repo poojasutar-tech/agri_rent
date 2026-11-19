@@ -79,7 +79,7 @@ export default function AdminLayout({ children }) {
             <SidebarContent className="px-3 py-4">
               <SidebarMenu>
                 <SidebarMenuItem>
-                  <SidebarMenuButton asChild isActive={pathname === "/admin/dashboard" || pathname === "/layouts/dashboard"}>
+                  <SidebarMenuButton asChild isActive={pathname === "/admin/dashboard"}>
                     <Link href="/admin/dashboard">
                       <LayoutDashboard className="w-5 h-5" />
                       <span>Dashboard</span>

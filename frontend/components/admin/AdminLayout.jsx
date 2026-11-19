@@ -15,7 +15,7 @@ import {
   LogOut,
   Bell,
   Search,
-  Tractor,
+  Sprout,
   Wrench,
   Package,
   Database,
@@ -29,7 +29,7 @@ const iconMap = {
   Users,
   Layers,
   Activity,
-  Tractor,
+  Sprout,
   Wrench,
   Package,
   Database,
@@ -116,11 +116,14 @@ export default function AdminLayout({ children }) {
       <div className="flex items-center gap-3 px-5 h-16 border-b border-slate-100">
         <Link href="/admin/dashboard" className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-xl bg-emerald-600 flex items-center justify-center text-white shadow-sm shrink-0">
-            <Tractor className="w-5 h-5" />
+            <Sprout size={20} strokeWidth={2.0} />
           </div>
           {sidebarOpen && (
-            <span className="font-extrabold text-lg tracking-tight text-slate-900">
-              Agri<span className="text-emerald-600">Rent</span>
+            // <span className="font-extrabold text-lg tracking-tight text-slate-900">
+            //   Agri<span className="text-emerald-600">Rent</span>
+            // </span>
+            <span className="flow-brand-text">
+              agri<span>rent</span>
             </span>
           )}
         </Link>

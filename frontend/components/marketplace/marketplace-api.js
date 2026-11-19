@@ -4,7 +4,7 @@
 import api from "../../app/utils/domain";
 
 export const MAX_RENTAL_DAYS = 30;
-export const PLATFORM_FEE_PERCENT = 5; // keep in sync with PLATFORM_FEE_PERCENT in the backend
+export const PLATFORM_FEE_PERCENT = 5;
 
 export const toList = (res) =>
   Array.isArray(res?.data) ? res.data : res?.data?.results || [];
@@ -26,6 +26,7 @@ export const extractError = (err, fallback = "Something went wrong. Please try a
 /** Logged-in user, as stored by your login flow (FlowHeader reads the same keys) */
 export const getStoredUser = () => {
   if (typeof window === "undefined") return { userCode: "", fullName: "" };
+  if (!localStorage.getItem("token")) return { userCode: "", fullName: "" };
   return {
     userCode: localStorage.getItem("user_code") || "",
     fullName: localStorage.getItem("full_name") || "",
@@ -74,6 +75,9 @@ export async function fetchMachine({ name, code }) {
     name: e.equipment_name || "Equipment",
     rate: Number(e.rental_price_per_day) || 0,
     deposit: Number(e.security_deposit) || 0,
+    platformFeePercent: Number.isFinite(Number(e.platform_fee_percent))
+      ? Number(e.platform_fee_percent)
+      : PLATFORM_FEE_PERCENT,
     image: e.display_equipment_image || "/field-tractor.png",
     place: e.location_address || "Location not listed",
     availability: e.availability_status || "AVAILABLE",

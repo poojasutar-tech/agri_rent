@@ -1,7 +1,10 @@
 import axios from "axios";
 
 export const get_domain = () => {
-  return "http://127.0.0.1:8000";
+  const configuredUrl = process.env.NEXT_PUBLIC_API_URL;
+  return configuredUrl
+    ? configuredUrl.replace(/\/+$/, "")
+    : "http://127.0.0.1:8000";
 };
 
 const domain = get_domain();

@@ -37,7 +37,7 @@ const RENT_STEPS = [
 
 const FAQS = [
   { q: "How far away can a machine be?", a: "We show machines within 50 miles of your farm. Closer machines cost less to deliver." },
-  { q: "Do I need to pay before the owner says yes?", a: "No. You pay nothing until the owner confirms your booking." },
+  { q: "When is payment taken?", a: "Razorpay payments are charged when you pay. If the owner declines the booking, the payment is refunded. Cash is paid directly to the owner." },
   { q: "Can I cancel my booking?", a: "Yes. If you cancel early, you get your money back. The booking page shows the exact rule for each machine." },
   { q: "I do not know which machine I need. What now?", a: "Call us on (800) 555-0124. Tell us your crop and land size, and we will suggest the right machine." },
 ];
@@ -75,7 +75,7 @@ const toMachine = (e, categoryNameByCode) => {
     rate: Number(e.rental_price_per_day) || 0,
     hourlyRate: Number(e.rental_price_per_hour) || 0,
     deposit: Number(e.security_deposit) || 0,
-    rating: "New", // backend has no ratings yet
+    rating: Number(e.average_rating) || "New",
     // Fields MachineCard reads directly:
     place: e.location_address || "Location not listed",
     specs: [
@@ -186,15 +186,11 @@ export default function EquipmentSearch() {
     [activeCategories]
   );
 
-  // Only machines that are active AND currently available are listed
+  // Show both available and occupied machines using availability from the API.
   const machines = useMemo(
     () =>
       apiEquipment
-        .filter(
-          (e) =>
-            Number(e.status) === 1 &&
-            (e.availability_status || "AVAILABLE") === "AVAILABLE"
-        )
+          .filter((e) => Number(e.status) === 1)
         .map((e) => toMachine(e, categoryNameByCode)),
     [apiEquipment, categoryNameByCode]
   );
@@ -311,7 +307,7 @@ export default function EquipmentSearch() {
           <div className="ent-section-head">
             <div>
               <span className="ent-kicker">Within 50 miles</span>
-              <h2>Available near Davis</h2>
+              <h2>Equipment near Davis</h2>
               <p aria-live="polite">
                 {loading
                   ? "Loading machines…"

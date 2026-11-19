@@ -51,13 +51,14 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .booking_helpers import (
     PLATFORM_FEE_PERCENT, MAX_RENTAL_DAYS,
     next_code, make_dt, money, razorpay_client, log_status, error, latest_payment,
+    send_booking_email,
 )
 from .models import (
     Bookings, BookingStatusHistory, Payments, Reviews,
@@ -100,7 +101,7 @@ class CredentialsProvidedPermission(permissions.BasePermission):
         return bool(username and password)
 
 
-from django.db.models import Q
+from django.db.models import Avg, Count, Q
 from django.contrib.auth.hashers import check_password, make_password
 from django.utils import timezone
 from rest_framework.views import APIView
@@ -546,6 +547,8 @@ class UsersDeleteView(APIView):
 # countries
 
 class CountriesListView(APIView):
+    permission_classes = [AllowAny]
+
     def get(self, request):
         try:
             data = Countries.objects.all().order_by('country_name')
@@ -1068,10 +1071,25 @@ from django.utils import timezone
 from .models import Users
 
 class RegisterView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
     def post(self, request):
         data = request.data
         email = data.get('email')
         mobile = data.get('mobile')
+        country_code = data.get('country_code')
+        password = data.get('password')
+
+        if not all((data.get('full_name'), email, mobile, password, country_code)):
+            return Response(
+                {"error": "Name, email, mobile, password, and country are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        country = Countries.objects.filter(country_code=country_code, status=1).first()
+        if not country:
+            return Response({"error": "Select a valid country."}, status=status.HTTP_400_BAD_REQUEST)
 
         # Check if email or mobile already exists
         if Users.objects.filter(email=email).exists():
@@ -1080,32 +1098,50 @@ class RegisterView(APIView):
             return Response({"error": "Mobile number already registered"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            # Generate a unique user code
-            count = Users.objects.count() + 1
-            user_code = f"USR-{count:04d}"
+            with transaction.atomic():
+                count = Users.objects.count() + 1
+                user_code = f"USR-{count:04d}"
+                user = Users.objects.create(
+                    user_code=user_code,
+                    full_name=data.get('full_name'),
+                    email=email,
+                    mobile=mobile,
+                    password_hash=make_password(password),
+                    role='FARMER',
+                    status=1,
+                    email_verified=0,
+                    mobile_verified=0,
+                    createdon=timezone.now(),
+                )
+                user.createdby = user.id
+                user.save(update_fields=['createdby'])
 
-            # Create user and save createdon, status, email_verified, mobile_verified
-            user = Users.objects.create(
-                user_code=user_code,
-                full_name=data.get('full_name'),
-                email=email,
-                mobile=mobile,
-                password_hash=make_password(data.get('password')),
-                role=data.get('role', 'FARMER'),
-                status=1,                  # 1 => Active
-                email_verified=0,          # 0 => Unverified
-                mobile_verified=0,         # 0 => Unverified
-                createdon=timezone.now(),  # Explicitly save registration timestamp
-            )
-
-            # Update createdby to point to themselves since they created their own account
-            user.createdby = user.id
-            user.save(update_fields=['createdby'])
+                last_profile = (
+                    FarmerProfiles.objects.select_for_update()
+                    .order_by('farmer_code')
+                    .last()
+                )
+                try:
+                    last_number = int(
+                        last_profile.farmer_code.replace("FARMER", "").replace("FAR", "")
+                    ) if last_profile else 0
+                except (ValueError, TypeError):
+                    last_number = 0
+                farmer = FarmerProfiles.objects.create(
+                    farmer_code=f"FARMER{last_number + 1:06d}",
+                    user_code=user,
+                    farm_name=(data.get('farm_name') or '').strip() or None,
+                    country_code=country,
+                    status=1,
+                    createdon=timezone.now(),
+                    createdby=user.id,
+                )
 
             return Response({
                 "message": "Registration successful!",
                 "user_id": user.id,
                 "user_code": user.user_code,
+                "farmer_code": farmer.farmer_code,
                 "role": user.role
             }, status=status.HTTP_201_CREATED)
 
@@ -1114,6 +1150,9 @@ class RegisterView(APIView):
 
 
 class LoginView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
     def post(self, request):
         identifier = request.data.get('email') # Can be email or mobile
         password = request.data.get('password')
@@ -1128,7 +1167,7 @@ class LoginView(APIView):
                 if user.status != 1:
                     return Response({"error": "This account is inactive or blocked."}, status=status.HTTP_403_FORBIDDEN)
 
-                # Update last_login timestamp
+                refresh = RefreshToken.for_user(user)
                 user.last_login = timezone.now()
                 user.save(update_fields=['last_login'])
 
@@ -1137,7 +1176,9 @@ class LoginView(APIView):
                     "role": user.role,
                     "full_name": user.full_name,
                     "user_code": user.user_code,
-                    "user_id": user.id
+                    "user_id": user.id,
+                    "access": str(refresh.access_token),
+                    "refresh": str(refresh),
                 }, status=status.HTTP_200_OK)
             else:
                 return Response({"error": "Invalid email/mobile or password."}, status=status.HTTP_400_BAD_REQUEST)
@@ -1157,9 +1198,40 @@ class EquipmentListView(APIView):
     
     def get(self, request):
         try:
-            objs = Equipment.objects.all().order_by("equipment_code")
+            objs = list(Equipment.objects.all().order_by("equipment_code"))
             serializer = EquipmentSerializer(objs, many=True, context={"request": request})
-            return Response(serializer.data, status=status.HTTP_200_OK)
+            equipment_data = list(serializer.data)
+            occupied_codes = set(
+                Bookings.objects.filter(
+                    booking_status__in=['PENDING', 'CONFIRMED']
+                ).values_list('equipment_code_id', flat=True)
+            )
+            ratings = {
+                row['equipment_code_id']: row
+                for row in Reviews.objects.filter(status=1)
+                .values('equipment_code_id')
+                .annotate(average_rating=Avg('rating'), review_count=Count('id'))
+            }
+
+            for equipment, item in zip(objs, equipment_data):
+                current_status = equipment.availability_status or 'AVAILABLE'
+                if current_status != 'MAINTENANCE':
+                    item['availability_status'] = (
+                        'OCCUPIED'
+                        if equipment.equipment_code in occupied_codes
+                        else 'AVAILABLE'
+                    )
+
+                rating = ratings.get(equipment.equipment_code, {})
+                item['platform_fee_percent'] = str(PLATFORM_FEE_PERCENT)
+                item['average_rating'] = (
+                    round(float(rating['average_rating']), 1)
+                    if rating.get('average_rating') is not None
+                    else None
+                )
+                item['review_count'] = rating.get('review_count', 0)
+
+            return Response(equipment_data, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -1244,17 +1316,23 @@ class BookingsListView(APIView):
     GET api/bookings/?user_code=USR001     -> bookings MADE by this user (renter)
     GET api/bookings/?owner_code=USR002    -> bookings for machines OWNED by this user
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         try:
             qs = _booking_queryset().order_by('-id')
             user_code = request.query_params.get('user_code')
             owner_code = request.query_params.get('owner_code')
+            actor_code = request.user.user_code
+            if (user_code and user_code != actor_code) or (owner_code and owner_code != actor_code):
+                if (request.user.role or '').upper() != 'ADMIN':
+                    return error("You cannot view another user's bookings.", status.HTTP_403_FORBIDDEN)
             if user_code:
                 qs = qs.filter(farmer_code__user_code=user_code)
-            if owner_code:
+            elif owner_code:
                 qs = qs.filter(equipment_code__farmer_code__user_code=owner_code)
+            elif (request.user.role or '').upper() != 'ADMIN':
+                qs = qs.filter(farmer_code__user_code=actor_code)
             return Response(BookingsSerializer(qs, many=True).data, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -1262,17 +1340,17 @@ class BookingsListView(APIView):
 
 class BookingsDetailView(APIView):
     """GET api/bookings/detail/<booking_code>/?user_code=USR001   (renter or machine owner only)"""
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, booking_code):
         booking = _booking_queryset().filter(booking_code=booking_code).first()
         if not booking:
             return error("Booking not found.", status.HTTP_404_NOT_FOUND)
 
-        user_code = request.query_params.get('user_code')
+        user_code = request.user.user_code
         renter = booking.farmer_code.user_code_id
         owner = booking.equipment_code.farmer_code.user_code_id
-        if user_code not in (renter, owner):
+        if user_code not in (renter, owner) and (request.user.role or '').upper() != 'ADMIN':
             return error("You cannot view this booking.", status.HTTP_403_FORBIDDEN)
 
         return Response(BookingsSerializer(booking).data, status=status.HTTP_200_OK)
@@ -1285,7 +1363,7 @@ class BookingsCreateView(APIView):
     Dates are "YYYY-MM-DD" and INCLUSIVE (21 Oct -> 23 Oct = 3 days).
     Every amount is calculated HERE from the machine price - never trusted from the browser.
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         try:
@@ -1298,7 +1376,7 @@ class BookingsCreateView(APIView):
             except (TypeError, ValueError):
                 return error("Valid start_date and end_date (YYYY-MM-DD) are required.")
 
-            if start_day < date.today():
+            if start_day < timezone.localdate():
                 return error("Start date cannot be in the past.")
             if end_day < start_day:
                 return error("Return date cannot be before the start date.")
@@ -1312,12 +1390,12 @@ class BookingsCreateView(APIView):
             ).first()
             if not equipment:
                 return error("Equipment not found.", status.HTTP_404_NOT_FOUND)
-            if (equipment.availability_status or 'AVAILABLE') != 'AVAILABLE':
-                return error("This machine is not available right now.")
+            if equipment.availability_status == 'MAINTENANCE':
+                return error("This machine is not available for booking.")
 
             # ---- 3. the renting farmer (looked up from the logged-in user_code) ----
             farmer = FarmerProfiles.objects.select_related('user_code').filter(
-                user_code=data.get('user_code')
+                user_code=request.user.user_code
             ).first()
             if not farmer:
                 return error("No farmer profile found for this user.")
@@ -1332,7 +1410,7 @@ class BookingsCreateView(APIView):
             total_amount = rental_amount + security_deposit + delivery_charge + platform_fee
 
             start_dt = make_dt(start_day, time.min)       # 00:00 on the first day
-            end_dt = make_dt(end_day, time(23, 59, 59))   # end of the last day
+            end_dt = make_dt(end_day, time.max)           # end of the last day
 
             service_type = (data.get('service_type') or '').strip()
             notes = (data.get('remarks') or '').strip()
@@ -1340,7 +1418,11 @@ class BookingsCreateView(APIView):
 
             # ---- 5. save (lock the machine row so two people cannot take the same dates) ----
             with transaction.atomic():
-                Equipment.objects.select_for_update().get(module_code=equipment.module_code)
+                locked_equipment = Equipment.objects.select_for_update().get(
+                    equipment_code=equipment.equipment_code
+                )
+                if locked_equipment.availability_status == 'MAINTENANCE':
+                    return error("This machine is not available for booking.")
 
                 clash = Bookings.objects.filter(
                     equipment_code=equipment,
@@ -1391,7 +1473,7 @@ class BookingStatusUpdateView(APIView):
     REJECTED / CANCELLED automatically refunds an online (Razorpay) payment.
     COMPLETED marks a pending cash payment as SUCCESS (cash was collected).
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     ALLOWED = {
         'PENDING': ['CONFIRMED', 'REJECTED', 'CANCELLED'],
@@ -1407,9 +1489,7 @@ class BookingStatusUpdateView(APIView):
             if not booking:
                 return error("Booking not found.", status.HTTP_404_NOT_FOUND)
 
-            actor = Users.objects.filter(user_code=request.data.get('user_code')).first()
-            if not actor:
-                return error("User not found.", status.HTTP_403_FORBIDDEN)
+            actor = request.user
 
             old_status = booking.booking_status
             if new_status not in self.ALLOWED.get(old_status, []):
@@ -1421,6 +1501,14 @@ class BookingStatusUpdateView(APIView):
             renter_cancelling = is_renter and old_status == 'PENDING' and new_status == 'CANCELLED'
             if not (is_admin or is_owner or renter_cancelling):
                 return error("You are not allowed to do this.", status.HTTP_403_FORBIDDEN)
+
+            if new_status == 'CONFIRMED' and not Payments.objects.filter(
+                booking_code=booking,
+            ).filter(
+                Q(payment_gateway='CASH', payment_status='PENDING')
+                | Q(payment_gateway='RAZORPAY', payment_status='SUCCESS')
+            ).exists():
+                return error("Complete online payment or select cash before confirming this booking.")
 
             # ---- refund an online payment BEFORE touching our database ----
             paid_online = None
@@ -1468,7 +1556,21 @@ class BookingStatusUpdateView(APIView):
                 log_status(booking, old_status, new_status, remarks or f"Status changed to {new_status}",
                            user=actor)
 
-            return Response(BookingsSerializer(booking).data, status=status.HTTP_200_OK)
+            response_data = BookingsSerializer(booking).data
+            if new_status == 'CONFIRMED':
+                response_data['confirmation_email_sent'] = send_booking_email(
+                    booking,
+                    f"Your Agrirent booking {booking.booking_code} is confirmed",
+                    (
+                        f"Hello {booking.farmer_code.user_code.full_name},\n\n"
+                        f"Your booking for {booking.equipment_code.equipment_name} "
+                        f"({booking.booking_code}) has been confirmed.\n"
+                        f"Rental dates: {booking.start_date:%Y-%m-%d} to "
+                        f"{booking.end_date:%Y-%m-%d}.\n\n"
+                        "Thank you for using Agrirent."
+                    ),
+                )
+            return Response(response_data, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -1495,31 +1597,38 @@ def _get_payable_booking(booking_code, user_code):
 
 class RazorpayCreateOrderView(APIView):
     """POST api/payments/razorpay/create-order/   body: { booking_code, user_code }"""
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         try:
             booking, err = _get_payable_booking(
-                request.data.get('booking_code'), request.data.get('user_code')
+                request.data.get('booking_code'), request.user.user_code
             )
             if err:
                 return err
 
-            if Payments.objects.filter(
-                booking_code=booking, payment_gateway='CASH', payment_status='PENDING'
-            ).exists():
-                return error("Cash payment was already selected for this booking.")
-
             amount_paise = int((booking.total_amount * 100).to_integral_value())
-
-            order = razorpay_client().order.create({
-                "amount": amount_paise,
-                "currency": "INR",
-                "receipt": booking.booking_code,
-                "payment_capture": 1,
-            })
-
             with transaction.atomic():
+                booking = Bookings.objects.select_for_update().get(pk=booking.pk)
+                pending = Payments.objects.filter(
+                    booking_code=booking, payment_status='PENDING'
+                ).first()
+                if pending:
+                    if pending.payment_gateway == 'CASH':
+                        return error("Cash payment was already selected for this booking.")
+                    return Response({
+                        "order_id": pending.razorpay_order_id,
+                        "amount": amount_paise,
+                        "currency": "INR",
+                        "key_id": settings.RAZORPAY_KEY_ID,
+                    }, status=status.HTTP_200_OK)
+
+                order = razorpay_client().order.create({
+                    "amount": amount_paise,
+                    "currency": "INR",
+                    "receipt": booking.booking_code,
+                    "payment_capture": 1,
+                })
                 Payments.objects.create(
                     payment_code=next_code(Payments, 'payment_code', 'PAY'),
                     booking_code=booking,
@@ -1548,13 +1657,15 @@ class RazorpayVerifyView(APIView):
     body: { razorpay_order_id, razorpay_payment_id, razorpay_signature, user_code }
     The signature check proves the payment is real - never skip it.
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         try:
             order_id = request.data.get('razorpay_order_id')
             payment_id = request.data.get('razorpay_payment_id')
             signature = request.data.get('razorpay_signature')
+            if not all((order_id, payment_id, signature)):
+                return error("Payment verification details are incomplete.")
 
             payment = Payments.objects.select_related(
                 'booking_code__farmer_code__user_code'
@@ -1563,24 +1674,49 @@ class RazorpayVerifyView(APIView):
                 return error("Order not found.", status.HTTP_404_NOT_FOUND)
 
             booking = payment.booking_code
-            if booking.farmer_code.user_code_id != request.data.get('user_code'):
+            if booking.farmer_code.user_code_id != request.user.user_code:
                 return error("This is not your booking.", status.HTTP_403_FORBIDDEN)
 
             if payment.payment_status == 'SUCCESS':  # verify called twice - already done
                 return Response(PaymentsSerializer(payment).data, status=status.HTTP_200_OK)
+            if (
+                payment.payment_status != 'PENDING'
+                or payment.payment_gateway != 'RAZORPAY'
+                or booking.booking_status != 'PENDING'
+            ):
+                return error("This payment can no longer be completed.")
 
+            client = razorpay_client()
             try:
-                razorpay_client().utility.verify_payment_signature({
+                client.utility.verify_payment_signature({
                     'razorpay_order_id': order_id,
                     'razorpay_payment_id': payment_id,
                     'razorpay_signature': signature,
                 })
             except razorpay.errors.SignatureVerificationError:
-                payment.payment_status = 'FAILED'
-                payment.save(update_fields=['payment_status'])
                 return error("Payment verification failed.")
 
+            gateway_payment = client.payment.fetch(payment_id)
+            expected_amount = int((payment.payment_amount * 100).to_integral_value())
+            if (
+                gateway_payment.get('order_id') != order_id
+                or gateway_payment.get('amount') != expected_amount
+                or gateway_payment.get('status') != 'captured'
+            ):
+                return error("Razorpay has not confirmed the expected captured payment.")
+
             with transaction.atomic():
+                payment = Payments.objects.select_for_update().get(pk=payment.pk)
+                booking = Bookings.objects.select_for_update().get(pk=booking.pk)
+                if payment.payment_status == 'SUCCESS':
+                    return Response(PaymentsSerializer(payment).data, status=status.HTTP_200_OK)
+                if booking.booking_status != 'PENDING':
+                    return error("This booking can no longer be paid.")
+                if Payments.objects.filter(
+                    booking_code=booking, payment_status='SUCCESS'
+                ).exclude(pk=payment.pk).exists():
+                    return error("This booking already has a successful payment.")
+
                 now = timezone.now()
                 payment.razorpay_payment_id = payment_id
                 payment.razorpay_signature = signature
@@ -1594,31 +1730,47 @@ class RazorpayVerifyView(APIView):
                 log_status(booking, booking.booking_status, booking.booking_status,
                            'Online payment received', user=booking.farmer_code.user_code)
 
-            return Response(PaymentsSerializer(payment).data, status=status.HTTP_200_OK)
+            email_sent = send_booking_email(
+                booking,
+                f"Payment received for Agrirent booking {booking.booking_code}",
+                (
+                    f"Hello {booking.farmer_code.user_code.full_name},\n\n"
+                    f"Your online payment for booking {booking.booking_code} has been received. "
+                    "The equipment owner still needs to confirm the booking."
+                ),
+            )
+            response_data = PaymentsSerializer(payment).data
+            response_data['booking_email_sent'] = email_sent
+            return Response(response_data, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class CashPaymentView(APIView):
     """POST api/payments/cash/   body: { booking_code, user_code }"""
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         try:
             booking, err = _get_payable_booking(
-                request.data.get('booking_code'), request.data.get('user_code')
+                request.data.get('booking_code'), request.user.user_code
             )
             if err:
                 return err
 
-            # chose cash earlier? return it again (no duplicate rows)
-            existing = Payments.objects.filter(
-                booking_code=booking, payment_gateway='CASH', payment_status='PENDING'
-            ).first()
-            if existing:
-                return Response(PaymentsSerializer(existing).data, status=status.HTTP_200_OK)
-
             with transaction.atomic():
+                booking = Bookings.objects.select_for_update().get(pk=booking.pk)
+                existing = Payments.objects.filter(
+                    booking_code=booking, payment_status='PENDING'
+                ).first()
+                if existing:
+                    if existing.payment_gateway == 'CASH':
+                        return Response(
+                            PaymentsSerializer(existing).data,
+                            status=status.HTTP_200_OK,
+                        )
+                    return error("Online payment was already selected for this booking.")
+
                 payment = Payments.objects.create(
                     payment_code=next_code(Payments, 'payment_code', 'PAY'),
                     booking_code=booking,
@@ -1634,7 +1786,19 @@ class CashPaymentView(APIView):
                 log_status(booking, booking.booking_status, booking.booking_status,
                            'Cash payment selected', user=booking.farmer_code.user_code)
 
-            return Response(PaymentsSerializer(payment).data, status=status.HTTP_201_CREATED)
+            email_sent = send_booking_email(
+                booking,
+                f"Booking request received: {booking.booking_code}",
+                (
+                    f"Hello {booking.farmer_code.user_code.full_name},\n\n"
+                    f"Your booking request for {booking.equipment_code.equipment_name} "
+                    f"({booking.booking_code}) was received. You selected cash payment; "
+                    "the equipment owner must confirm the booking."
+                ),
+            )
+            response_data = PaymentsSerializer(payment).data
+            response_data['booking_email_sent'] = email_sent
+            return Response(response_data, status=status.HTTP_201_CREATED)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -1658,7 +1822,7 @@ class ReviewsListView(APIView):
 
 class ReviewsCreateView(APIView):
     """POST api/reviews/create/   body: { user_code, booking_code, rating 1-5, review_comment }"""
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         try:
@@ -1675,7 +1839,7 @@ class ReviewsCreateView(APIView):
             if not booking:
                 return error("Booking not found.", status.HTTP_404_NOT_FOUND)
 
-            if booking.farmer_code.user_code_id != data.get('user_code'):
+            if booking.farmer_code.user_code_id != request.user.user_code:
                 return error("You can only review your own bookings.", status.HTTP_403_FORBIDDEN)
             if booking.booking_status != 'COMPLETED':
                 return error("You can review a booking once the rental is completed.")

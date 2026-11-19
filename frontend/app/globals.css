@@ -2367,6 +2367,13 @@ td > b {
   border-radius: 50%;
   background: #37a565;
 }
+.flow-available.occupied {
+  background: #fff1e8;
+  color: #a64b1c;
+}
+.flow-available.occupied i {
+  background: #d97745;
+}
 .flow-machine-info {
   padding: 13px;
 }
@@ -3158,7 +3165,7 @@ td > b {
 .auth-form-side {
   display: grid;
   place-items: center;
-  padding: 35px 8%;
+  padding: 50px 8%;
 }
 .auth-form-wrap {
   width: min(100%, 380px);

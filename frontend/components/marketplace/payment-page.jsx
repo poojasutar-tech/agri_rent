@@ -13,8 +13,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { FlowFrame, currency } from "./shared";
-// ⚠️ Adjust this path to wherever your axios instance lives relative to THIS file
-import api from "../../utils/domain";
+import api from "../../app/utils/domain";
 import { extractError, formatDay, getStoredUser } from "./marketplace-api";
 
 const RAZORPAY_SCRIPT = "https://checkout.razorpay.com/v1/checkout.js";
@@ -54,7 +53,10 @@ export default function Payment({ bookingCode }) {
       setLoadError("No booking was selected.");
       return;
     }
-    if (!user.userCode) return; // wait until the stored user has been read
+    if (!user.userCode) {
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -65,8 +67,14 @@ export default function Payment({ bookingCode }) {
         });
         if (cancelled) return;
         setBooking(data);
-        if (data.payment_status === "SUCCESS") setDone("online");
-        else if (data.payment_gateway === "CASH") setDone("cash");
+        if (
+          data.payment_gateway === "CASH" &&
+          ["PENDING", "SUCCESS"].includes(data.payment_status)
+        ) {
+          setDone("cash");
+        } else if (data.payment_status === "SUCCESS") {
+          setDone("online");
+        }
       } catch (err) {
         if (!cancelled) setLoadError(extractError(err, "We could not load your booking."));
       } finally {
@@ -158,6 +166,24 @@ export default function Payment({ bookingCode }) {
   }
 
   if (loadError || !booking) {
+    if (!loadError && !user.userCode) {
+      return (
+        <FlowFrame active="Payment">
+          <main className="flow-main flow-narrow">
+            <section className="flow-form-card">
+              <h2>Sign in to continue to payment</h2>
+              <p>Sign in with the account used to create this booking.</p>
+              <Link
+                className="flow-primary"
+                href={`/login?next=${encodeURIComponent(`/payment?booking=${code}`)}`}
+              >
+                Sign in <ArrowRight size={15} />
+              </Link>
+            </section>
+          </main>
+        </FlowFrame>
+      );
+    }
     return (
       <FlowFrame active="Payment">
         <main className="flow-main flow-narrow">
@@ -177,6 +203,11 @@ export default function Payment({ bookingCode }) {
   const deposit = Number(booking.security_deposit) || 0;
   const delivery = Number(booking.delivery_charge) || 0;
   const completed = booking.booking_status === "COMPLETED";
+  const canPay = booking.booking_status === "PENDING" && !done;
+  const paymentMethodLocked =
+    canPay &&
+    booking.payment_status === "PENDING" &&
+    Boolean(booking.payment_gateway);
 
   return (
     <FlowFrame active="Payment">
@@ -187,7 +218,7 @@ export default function Payment({ bookingCode }) {
         <div className="flow-page-intro compact-intro">
           <span className="flow-eyebrow">SECURE CHECKOUT</span>
           <h1>Payment details</h1>
-          <p>Booking {booking.booking_code}. Pay online now or in cash when you receive the machine.</p>
+          <p>Booking {booking.booking_code}. Pay online with Razorpay or select cash to pay the owner at pickup or delivery.</p>
         </div>
         <div className="checkout-steps">
           <span className="step-done">
@@ -213,7 +244,7 @@ export default function Payment({ bookingCode }) {
                   type="radio"
                   name="method"
                   checked={method === "online"}
-                  disabled={!!done}
+                  disabled={!canPay || paymentMethodLocked}
                   onChange={() => setMethod("online")}
                 />
                 <span className="payment-symbol">
@@ -229,7 +260,7 @@ export default function Payment({ bookingCode }) {
                   type="radio"
                   name="method"
                   checked={method === "cash"}
-                  disabled={!!done}
+                  disabled={!canPay || paymentMethodLocked}
                   onChange={() => setMethod("cash")}
                 />
                 <span className="payment-symbol">
@@ -241,6 +272,11 @@ export default function Payment({ bookingCode }) {
                 </span>
               </label>
             </div>
+            {paymentMethodLocked && (
+              <p className="booking-fine" role="status">
+                A payment method is already selected for this booking. Continue with that method.
+              </p>
+            )}
             <div className="payment-safety">
               <LockKeyhole size={15} />
               <span>Encrypted and secure checkout</span>
@@ -306,7 +342,7 @@ export default function Payment({ bookingCode }) {
                   </Link>
                 )}
               </div>
-            ) : (
+            ) : canPay ? (
               <button className="flow-primary" onClick={handlePay} disabled={processing}>
                 {processing
                   ? "Please wait…"
@@ -315,6 +351,11 @@ export default function Payment({ bookingCode }) {
                   : "Confirm cash payment"}{" "}
                 <ArrowRight size={15} />
               </button>
+            ) : (
+              <div className="flow-success compact-success">
+                <b>Booking {String(booking.booking_status || "").toLowerCase()}</b>
+                <small>This booking is no longer waiting for payment.</small>
+              </div>
             )}
             <small className="booking-fine">
               <ShieldCheck size={12} /> Online payments are refunded if the owner declines.

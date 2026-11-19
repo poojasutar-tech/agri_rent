@@ -8,7 +8,7 @@ import {
   User, 
   Mail, 
   Lock, 
-  UserPlus, 
+  Sprout, 
   Loader2, 
   ShieldCheck,
   Phone,
@@ -74,7 +74,7 @@ export default function AdminRegister() {
               localStorage.setItem("refresh_token", refresh);
               localStorage.setItem("admin_token", access);
           }
-          setTimeout(() => router.push("/layouts/dashboard"), 1200);
+          setTimeout(() => router.push("/admin/dashboard"), 1200);
       } else {
           setTimeout(() => router.push("/admin/login"), 1500);
       }
@@ -94,10 +94,10 @@ export default function AdminRegister() {
       <div className="max-w-md w-full animate-in fade-in zoom-in-95 duration-500">
         <div className="text-center mb-6">
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-emerald-100 dark:bg-emerald-600/20 border border-emerald-200 dark:border-emerald-500/30 text-emerald-600 dark:text-emerald-400 shadow-lg mb-4 transition-transform hover:-rotate-3">
-            <UserPlus className="w-7 h-7" />
+            <Sprout size={20} strokeWidth={2.0} />
           </div>
-          <h2 className="text-2xl font-black tracking-tight uppercase text-slate-900 dark:text-white">Admin Registration</h2>
-          <p className="text-sm font-medium mt-1 text-slate-500 dark:text-slate-400">Create your management account</p>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">Admin Registration</h1>
+          {/* <p className="text-sm font-medium mt-1 text-slate-500 dark:text-slate-400">Create your management account</p> */}
         </div>
 
         <div className="bg-white dark:bg-slate-900 shadow-2xl relative overflow-hidden p-6 sm:p-8 rounded-2xl border border-slate-200 dark:border-slate-800">

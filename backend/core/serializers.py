@@ -8,6 +8,7 @@ import base64
 from django.db import transaction
 from rest_framework import serializers
 from .models import Users
+from .booking_helpers import latest_payment, money
 
 class UsersSerializer(serializers.ModelSerializer):
     class Meta:

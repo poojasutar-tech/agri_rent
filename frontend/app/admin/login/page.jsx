@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Tractor, Lock, User, AlertCircle, ArrowRight, UserPlus } from "lucide-react";
+import { Sprout, Lock, User, AlertCircle, ArrowRight, UserPlus } from "lucide-react";
 import api from "../../../src/api";
 
 export default function AdminLoginPage() {
@@ -43,7 +43,7 @@ export default function AdminLoginPage() {
       );
 
       // Redirect to Admin Dashboard
-      router.push("/layouts/dashboard");
+      router.push("/admin/dashboard");
     } catch (err) {
       setError(
         err.response?.data?.error ||
@@ -62,7 +62,7 @@ export default function AdminLoginPage() {
         {/* Brand Header */}
         <div className="flex flex-col items-center text-center mb-8">
           <div className="w-14 h-14 rounded-2xl bg-emerald-100 dark:bg-emerald-600/20 border border-emerald-200 dark:border-emerald-500/30 flex items-center justify-center text-emerald-600 dark:text-emerald-400 mb-4 shadow-sm">
-            <Tractor className="w-8 h-8" />
+            <Sprout size={20} strokeWidth={2.0} />
           </div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
             AgriRent Admin Portal
