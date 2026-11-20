@@ -12,7 +12,8 @@ const SPEC_LABELS = ["Main feature", "What it can do", "Also included"];
 
 const AVAILABILITY_LABEL = {
   AVAILABLE: "Available",
-  RENTED: "Currently rented",
+  OCCUPIED: "Occupied",
+  RENTED: "Occupied",
   MAINTENANCE: "In maintenance",
 };
 
@@ -59,10 +60,11 @@ const toItem = (e, categoryNameByCode, farmerByCode) => {
     rate: Number(e.rental_price_per_day) || 0,
     image: e.display_equipment_image || "/field-tractor.png",
     place: e.location_address || farmer.farm_name || "Location not listed",
-    rating: "New", // backend has no ratings yet
+    rating: Number(e.average_rating) || null,
+    reviewCount: Number(e.review_count) || 0,
     description:
       e.description ||
-      `${e.equipment_name || "This machine"}${category ? ` (${category})` : ""} is available to rent. Contact the owner after booking to arrange delivery or pickup.`,
+      `${e.equipment_name || "This machine"}${category ? ` (${category})` : ""} can be rented when your selected dates are available. Contact the owner after booking to arrange delivery or pickup.`,
     specs,
     ownerName: e.farmer_name || farmer.farmer_name || "Verified owner",
     availability: e.availability_status || "AVAILABLE",
@@ -90,6 +92,8 @@ export default function EquipmentDetails({ itemName, itemCode }) {
 
   /* ---------- backend data ---------- */
   const [raw, setRaw] = useState({ equipment: [], categories: [], farmers: [] });
+  const [reviews, setReviews] = useState([]);
+  const [reviewsError, setReviewsError] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
@@ -142,6 +146,25 @@ export default function EquipmentDetails({ itemName, itemCode }) {
 
     return match ? toItem(match, categoryNameByCode, farmerByCode) : null;
   }, [raw, query]);
+
+  useEffect(() => {
+    if (!item?.code) return;
+    let cancelled = false;
+    api.get("api/reviews/", { params: { equipment_code: item.code } })
+      .then(({ data }) => {
+        if (!cancelled) {
+          setReviews(Array.isArray(data) ? data : data?.results || []);
+          setReviewsError("");
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.error("Failed to load equipment reviews:", err);
+          setReviewsError("Reviews could not be loaded right now.");
+        }
+      });
+    return () => { cancelled = true; };
+  }, [item?.code]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -219,13 +242,17 @@ export default function EquipmentDetails({ itemName, itemCode }) {
     `/service-booking?item=${encodeURIComponent(item.name)}&code=${encodeURIComponent(item.code)}&days=${days}` +
     (start ? `&start=${start}` : "");
 
-  const isAvailable = item.availability === "AVAILABLE";
-  const reviewsText = item.rating === "New" ? "No reviews yet" : "Rated by renters";
+  const ratingText = item.rating ? item.rating.toFixed(1) : "New";
+  const reviewsText = item.reviewCount === 0
+    ? "No reviews yet"
+    : `${item.reviewCount} ${item.reviewCount === 1 ? "review" : "reviews"}`;
 
   const views = [
     { label: "Photo", node: <img className="detail-main-image ent-zoom" src={item.image} alt={`${item.name} available for rent`} /> },
-    { label: "Details", node: <div className="ent-gallery-tile"><Tractor size={54} /><span>Machine details</span></div> },
-    { label: "Farm ready", node: <div className="ent-gallery-tile green"><Sprout size={54} /><span>Ready for your farm</span></div> },
+    // { label: "Details", node: 
+    // <div className="ent-gallery-tile"><Tractor size={54} /><span>Machine details</span></div> },
+    // { label: "Farm ready", node: <div className="ent-gallery-tile green"><Sprout size={54} /><span>Ready for your farm</span>
+    // </div> },
   ];
 
   return (
@@ -267,7 +294,7 @@ export default function EquipmentDetails({ itemName, itemCode }) {
                 <p className="ent-detail-meta">
                   <MapPin size={15} /> {item.place}
                   <i />
-                  <span className="ent-stars"><Star size={14} fill="currentColor" /> {item.rating}</span>
+                  <span className="ent-stars"><Star size={14} fill="currentColor" /> {ratingText}</span>
                   <small>({reviewsText})</small>
                 </p>
               </div>
@@ -302,7 +329,7 @@ export default function EquipmentDetails({ itemName, itemCode }) {
             <div className="ent-book-card hero-stagger-5">
               <div className="ent-book-price">
                 <span><b>{currency(item.rate)}</b><small> per day</small></span>
-                <span className="ent-stars"><Star size={14} fill="currentColor" /> {item.rating}</span>
+                <span className="ent-stars"><Star size={14} fill="currentColor" /> {ratingText}</span>
               </div>
 
               <div className="ent-book-row">
@@ -324,16 +351,48 @@ export default function EquipmentDetails({ itemName, itemCode }) {
                 <strong key={total}>{currency(total)}</strong>
               </div>
 
-              <Link className="ent-btn-primary ent-book-btn" href={bookHref}>
-                <span>Check dates and book</span><ArrowRight size={16} className="ent-arrow" />
-              </Link>
+              {item.availability === "MAINTENANCE" ? (
+                <button className="ent-btn-primary ent-book-btn" type="button" disabled>
+                  <span>Unavailable during maintenance</span>
+                </button>
+              ) : (
+                <Link className="ent-btn-primary ent-book-btn" href={bookHref}>
+                  <span>Check dates and book</span><ArrowRight size={16} className="ent-arrow" />
+                </Link>
+              )}
               <ul className="ent-book-notes">
-                <li><CheckCircle2 size={14} /> You pay nothing until the owner confirms</li>
+                <li><CheckCircle2 size={14} /> Online payments are refunded if the owner declines</li>
                 <li><Truck size={14} /> Delivery and pickup can be arranged</li>
               </ul>
             </div>
           </section>
         </div>
+        <section className="ent-section" aria-labelledby="equipment-reviews-heading">
+          <div className="ent-section-head">
+            <div>
+              <span className="ent-kicker">Renter feedback</span>
+              <h2 id="equipment-reviews-heading">Reviews</h2>
+              <p>{reviewsText}</p>
+            </div>
+          </div>
+          {reviewsError ? (
+            <p role="status">{reviewsError}</p>
+          ) : reviews.length > 0 ? (
+            <div className="ent-cat-grid">
+              {reviews.map((review) => (
+                <article className="ent-cat-card" key={review.review_code}>
+                  <span className="ent-stars">
+                    <Star size={14} fill="currentColor" /> {review.rating}/5
+                  </span>
+                  <h3>{review.farmer_name || "Verified renter"}</h3>
+                  {review.review_comment && <p>{review.review_comment}</p>}
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p>No published reviews yet.</p>
+          )}
+        </section>
       </main>
     </FlowFrame>
   );

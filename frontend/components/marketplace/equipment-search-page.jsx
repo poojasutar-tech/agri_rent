@@ -15,6 +15,7 @@ const CATEGORIES = ["All equipment", "Tractor", "Harvester"];
 
 const SORTS = [
   { id: "best", label: "Best match" },
+  { id: "nearest", label: "Nearest to me" },
   { id: "low", label: "Price: low to high" },
   { id: "high", label: "Price: high to low" },
   { id: "rating", label: "Best rated" },
@@ -37,7 +38,7 @@ const RENT_STEPS = [
 
 const FAQS = [
   { q: "How far away can a machine be?", a: "We show machines within 50 miles of your farm. Closer machines cost less to deliver." },
-  { q: "Do I need to pay before the owner says yes?", a: "No. You pay nothing until the owner confirms your booking." },
+  { q: "When is payment taken?", a: "Razorpay payments are charged when you pay. If the owner declines the booking, the payment is refunded. Cash is paid directly to the owner." },
   { q: "Can I cancel my booking?", a: "Yes. If you cancel early, you get your money back. The booking page shows the exact rule for each machine." },
   { q: "I do not know which machine I need. What now?", a: "Call us on (800) 555-0124. Tell us your crop and land size, and we will suggest the right machine." },
 ];
@@ -49,14 +50,42 @@ const MARKET_STATS = [
   { icon: ShieldCheck, value: "100%", label: "Owners verified" },
 ];
 
-/* ================= API HELPERS ================= */
+/* ================= API & GEO HELPERS ================= */
 
 const toList = (res) =>
   Array.isArray(res?.data) ? res.data : res?.data?.results || [];
 
+/** Haversine distance in miles between two lat/lng pairs */
+const calculateDistanceMiles = (lat1, lon1, lat2, lon2) => {
+  const nLat1 = Number(lat1);
+  const nLon1 = Number(lon1);
+  const nLat2 = Number(lat2);
+  const nLon2 = Number(lon2);
+  if (
+    Number.isNaN(nLat1) ||
+    Number.isNaN(nLon1) ||
+    Number.isNaN(nLat2) ||
+    Number.isNaN(nLon2)
+  ) {
+    return null;
+  }
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const earthRadiusMiles = 3958.8;
+  const dLat = toRad(nLat2 - nLat1);
+  const dLon = toRad(nLon2 - nLon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(nLat1)) *
+      Math.cos(toRad(nLat2)) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Number((earthRadiusMiles * c).toFixed(1));
+};
+
 /** Maps one backend Equipment record to the shape <MachineCard item={...} /> uses.
- *  Extra aliases (img / photo / location …) are included so the card finds its field
- *  whichever name it reads. */
+-  Extra aliases (img / photo / location …) are included so the card finds its field
+-  whichever name it reads. */
 const toMachine = (e, categoryNameByCode) => {
   const image = e.display_equipment_image || null;
   const category = categoryNameByCode[e.category_code] || e.category_code || "";
@@ -75,7 +104,7 @@ const toMachine = (e, categoryNameByCode) => {
     rate: Number(e.rental_price_per_day) || 0,
     hourlyRate: Number(e.rental_price_per_hour) || 0,
     deposit: Number(e.security_deposit) || 0,
-    rating: "New", // backend has no ratings yet
+    rating: Number(e.average_rating) || "New",
     // Fields MachineCard reads directly:
     place: e.location_address || "Location not listed",
     specs: [
@@ -97,6 +126,7 @@ const toMachine = (e, categoryNameByCode) => {
     availability: e.availability_status || "AVAILABLE",
     latitude: e.latitude,
     longitude: e.longitude,
+    distanceMiles: null,
   };
 };
 
@@ -125,12 +155,87 @@ export default function EquipmentSearch() {
   const tilt = useTilt();
   const rootRef = useRef(null);
 
+  /* ---------- geolocation state ---------- */
+  const [userLocation, setUserLocation] = useState(null); // { latitude, longitude, accuracy, label }
+  const [geoStatus, setGeoStatus] = useState("idle"); // idle | locating | granted | denied | error | unsupported
+  const [geoError, setGeoError] = useState("");
+
   /* ---------- backend data ---------- */
   const [apiEquipment, setApiEquipment] = useState([]);
   const [apiCategories, setApiCategories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
+
+  const handleRequestLocation = useCallback(() => {
+    if (typeof window === "undefined" || !("geolocation" in navigator)) {
+      setGeoStatus("unsupported");
+      setGeoError("Geolocation is not supported in this browser.");
+      return;
+    }
+
+    setGeoStatus("locating");
+    setGeoError("");
+
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const { latitude, longitude, accuracy } = pos.coords;
+        let resolvedLabel = `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+
+        // Dynamic reverse lookup if backend exposes an endpoint (fails silently without breaking)
+        try {
+          const geoRes = await api.get("api/reverse-geocode/", {
+            params: { lat: latitude, lng: longitude },
+          });
+          const dynamicName =
+            geoRes?.data?.place ||
+            geoRes?.data?.city ||
+            geoRes?.data?.address ||
+            geoRes?.data?.label;
+          if (dynamicName) {
+            resolvedLabel = String(dynamicName);
+          }
+        } catch {
+          // Keep coordinate label if no reverse-geocode route is configured on backend
+        }
+
+        setUserLocation({
+          latitude,
+          longitude,
+          accuracy,
+          label: resolvedLabel,
+        });
+        setGeoStatus("granted");
+        setGeoError("");
+      },
+      (err) => {
+        setGeoError("");
+        switch (err?.code) {
+          case err?.PERMISSION_DENIED:
+            setGeoStatus("denied");
+            setGeoError("Location permission denied. Showing all listed machines.");
+            break;
+          case err?.POSITION_UNAVAILABLE:
+            setGeoStatus("error");
+            setGeoError("Current location is unavailable.");
+            break;
+          case err?.TIMEOUT:
+            setGeoStatus("error");
+            setGeoError("Location request timed out. Please try again.");
+            break;
+          default:
+            setGeoStatus("error");
+            setGeoError("Could not retrieve your current location.");
+            break;
+        }
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 60000,
+      }
+    );
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -186,17 +291,29 @@ export default function EquipmentSearch() {
     [activeCategories]
   );
 
-  // Only machines that are active AND currently available are listed
+  // Show both available and occupied machines using availability from the API,
+  // and compute distance dynamically whenever customer geolocation is available.
   const machines = useMemo(
     () =>
       apiEquipment
-        .filter(
-          (e) =>
-            Number(e.status) === 1 &&
-            (e.availability_status || "AVAILABLE") === "AVAILABLE"
-        )
-        .map((e) => toMachine(e, categoryNameByCode)),
-    [apiEquipment, categoryNameByCode]
+        .filter((e) => Number(e.status) === 1)
+        .map((e) => {
+          const base = toMachine(e, categoryNameByCode);
+          const dist =
+            userLocation && e.latitude != null && e.longitude != null
+              ? calculateDistanceMiles(
+                  userLocation.latitude,
+                  userLocation.longitude,
+                  e.latitude,
+                  e.longitude
+                )
+              : null;
+          return {
+            ...base,
+            distanceMiles: dist,
+          };
+        }),
+    [apiEquipment, categoryNameByCode, userLocation]
   );
 
   const marketStats = useMemo(
@@ -212,9 +329,17 @@ export default function EquipmentSearch() {
   const filtered = useMemo(() => {
     const list = machines.filter(
       (m) =>
-        `${m.name} ${m.category} ${m.brand} ${m.model}`.toLowerCase().includes(term.trim().toLowerCase()) &&
+        `${m.name} ${m.category} ${m.brand} ${m.model} ${m.place}`.toLowerCase().includes(term.trim().toLowerCase()) &&
         (category === "All equipment" || m.category.toLowerCase().includes(category.toLowerCase()))
     );
+    if (sort === "nearest") {
+      return [...list].sort((a, b) => {
+        if (a.distanceMiles == null && b.distanceMiles == null) return 0;
+        if (a.distanceMiles == null) return 1;
+        if (b.distanceMiles == null) return -1;
+        return a.distanceMiles - b.distanceMiles;
+      });
+    }
     if (sort === "low") return [...list].sort((a, b) => a.rate - b.rate);
     if (sort === "high") return [...list].sort((a, b) => b.rate - a.rate);
     if (sort === "rating") return [...list].sort((a, b) => (Number(b.rating) || 0) - (Number(a.rating) || 0));
@@ -238,7 +363,16 @@ export default function EquipmentSearch() {
     return () => io.disconnect();
   }, []);
 
-  const reset = () => { setTerm(""); setCategory("All equipment"); };
+  const reset = () => {
+    setTerm("");
+    setCategory("All equipment");
+    setUserLocation(null);
+    setGeoStatus("idle");
+    setGeoError("");
+  };
+
+  const activeLocationLabel = userLocation?.label || "Current area (tap to locate)";
+  const activeHeadingLocation = userLocation?.label ? `near ${userLocation.label}` : "available near you";
 
   return (
     <FlowFrame active="Equipment Search">
@@ -255,7 +389,24 @@ export default function EquipmentSearch() {
         <section className="ent-command-bar" data-reveal>
           <div className="ent-command-field">
             <span className="ent-command-icon"><MapPin size={18} /></span>
-            <div><label>Your farm area</label><strong>Davis, California</strong></div>
+            <div>
+              <label>Your farm area</label>
+              <strong>{activeLocationLabel}</strong>
+              {geoStatus === "locating" && <small className="ent-mini-label">Detecting location…</small>}
+              {geoError && <small className="ent-mini-label">{geoError}</small>}
+            </div>
+            <button
+              type="button"
+              className="ent-quick-tag"
+              onClick={handleRequestLocation}
+              disabled={geoStatus === "locating"}
+            >
+              {geoStatus === "locating"
+                ? "Locating…"
+                : userLocation
+                  ? "Update location"
+                  : "Use my location"}
+            </button>
           </div>
           <div className="ent-command-sep" />
           <label className="ent-command-field" htmlFor="rent-date">
@@ -311,7 +462,7 @@ export default function EquipmentSearch() {
           <div className="ent-section-head">
             <div>
               <span className="ent-kicker">Within 50 miles</span>
-              <h2>Available near Davis</h2>
+              <h2>Equipment {activeHeadingLocation}</h2>
               <p aria-live="polite">
                 {loading
                   ? "Loading machines…"
@@ -348,7 +499,7 @@ export default function EquipmentSearch() {
           </div>
 
           {/* key on the grid replays the entrance animation when filters change */}
-          <div className="flow-machine-grid ent-machine-wrapper" key={`${category}-${term}`}>
+          <div className="flow-machine-grid ent-machine-wrapper" key={`${category}-${term}-${sort}`}>
             {filtered.map((m, i) => (
               <div key={m.id} className="ent-card-slot ent-card-enter" style={{ "--stagger": `${i * 70}ms` }} {...tilt}>
                 <MachineCard item={m} />

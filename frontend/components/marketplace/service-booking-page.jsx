@@ -104,7 +104,8 @@ export default function ServiceBooking({ itemName, itemCode }) {
   /* ---------- price preview (the server recalculates the real total) ---------- */
   const rental = item ? item.rate * days : 0;
   const deposit = item ? item.deposit : 0;
-  const fee = Math.round(rental * PLATFORM_FEE_PERCENT) / 100;
+  const feePercent = item?.platformFeePercent ?? PLATFORM_FEE_PERCENT;
+  const fee = Math.round((rental * feePercent) / 100 * 100) / 100;
   const total = rental + deposit + fee;
 
   const itemParam = item ? encodeURIComponent(item.name) : "";

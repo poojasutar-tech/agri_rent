@@ -76,9 +76,13 @@ urlpatterns = [
     path('api/payments/razorpay/create-order/', RazorpayCreateOrderView.as_view(), name='razorpay-create-order'),
     path('api/payments/razorpay/verify/', RazorpayVerifyView.as_view(), name='razorpay-verify'),
     path('api/payments/cash/', CashPaymentView.as_view(), name='payments-cash'),
+    path('api/payments/cash/confirm/<str:booking_code>/', CashPaymentConfirmView.as_view(), name='payments-cash-confirm'),
 
     path('api/reviews/', ReviewsListView.as_view(), name='reviews-list'),
     path('api/reviews/create/', ReviewsCreateView.as_view(), name='reviews-create'),
+    path('api/reviews/<str:review_code>/', ReviewsDetailView.as_view(), name='reviews-detail'),
+    path('api/reviews/update/<str:review_code>/', ReviewsUpdateView.as_view(), name='reviews-update'),
+    path('api/reviews/delete/<str:review_code>/', ReviewsDeleteView.as_view(), name='reviews-delete'),
     
     
     

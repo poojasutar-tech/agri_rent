@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowRight, Loader2 } from "lucide-react";
 import { AuthShell, TextField } from "./shared";
+import api from "../../app/utils/domain";
 
 export default function Login() {
   const router = useRouter();
@@ -21,31 +22,33 @@ export default function Login() {
     const password = formData.get("password");
 
     try {
-      const response = await fetch("http://127.0.0.1:8000/api/auth/login/", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
-
-      const data = await response.json();
-
-      if (response.ok) {
+      const { data } = await api.post("api/auth/login/", { email, password });
+      if (data.access) {
         // Set cookies and localStorage so header can display user info & middleware permits access
         document.cookie = "is_logged_in=true; path=/; max-age=86400";
         localStorage.setItem("full_name", data.full_name);
         localStorage.setItem("user_code", data.user_code);
         localStorage.setItem("user_role", data.role);
+        localStorage.setItem("token", data.access);
+        localStorage.setItem("refresh_token", data.refresh);
 
-        if (data.role === "ADMIN") {
+        const nextPath = new URLSearchParams(window.location.search).get("next");
+        const safeNextPath =
+          nextPath?.startsWith("/") && !nextPath.startsWith("//")
+            ? nextPath
+            : null;
+        if (safeNextPath) {
+          router.push(safeNextPath);
+        } else if (data.role === "ADMIN") {
           router.push("/admin/dashboard");
         } else {
           router.push("/equipment");
         }
       } else {
-        setError(data.error || "Invalid credentials.");
+        setError("Login response did not include an access token.");
       }
     } catch (err) {
-      setError("Unable to connect to the server. Please check your backend.");
+      setError(err?.response?.data?.error || "Unable to connect to the server. Please check your backend.");
     } finally {
       setLoading(false);
     }

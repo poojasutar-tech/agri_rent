@@ -23,6 +23,7 @@ export default function RatingReview({ bookingCode }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [submitted, setSubmitted] = useState(false);
+  const [existingReview, setExistingReview] = useState(null);
 
   useEffect(() => {
     const p = new URLSearchParams(window.location.search);
@@ -36,7 +37,10 @@ export default function RatingReview({ bookingCode }) {
       setLoadError("No booking was selected.");
       return;
     }
-    if (!user.userCode) return;
+    if (!user.userCode) {
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -45,7 +49,17 @@ export default function RatingReview({ bookingCode }) {
         const { data } = await api.get(`api/bookings/detail/${encodeURIComponent(code)}/`, {
           params: { user_code: user.userCode },
         });
-        if (!cancelled) setBooking(data);
+        if (cancelled) return;
+        setBooking(data);
+        const { data: reviewData } = await api.get("api/reviews/", {
+          params: { equipment_code: data.equipment_code },
+        });
+        const reviewList = Array.isArray(reviewData) ? reviewData : reviewData?.results || [];
+        if (!cancelled) {
+          setExistingReview(
+            reviewList.find((review) => review.booking_code === data.booking_code) || null
+          );
+        }
       } catch (err) {
         if (!cancelled) setLoadError(extractError(err, "We could not load your booking."));
       } finally {
@@ -129,6 +143,42 @@ export default function RatingReview({ bookingCode }) {
           Back to all machines <ArrowRight size={13} />
         </Link>
       </div>
+    );
+  }
+
+  if (booking.renter_user_code !== user.userCode) {
+    return shell(
+      <section className="flow-form-card">
+        <h2>This booking cannot be reviewed by this account</h2>
+        <p>Only the renter who made the booking can submit its review.</p>
+        <Link className="flow-primary" href="/equipment">
+          View equipment <ArrowRight size={15} />
+        </Link>
+      </section>
+    );
+  }
+
+  if (booking.payment_status !== "SUCCESS") {
+    return shell(
+      <section className="flow-form-card">
+        <h2>Payment is required before reviewing</h2>
+        <p>Complete payment for booking {booking.booking_code} before submitting a review.</p>
+        <Link className="flow-primary" href="/equipment">
+          View equipment <ArrowRight size={15} />
+        </Link>
+      </section>
+    );
+  }
+
+  if (existingReview) {
+    return shell(
+      <section className="flow-form-card">
+        <h2>You have already reviewed this rental</h2>
+        <p>Your published review for booking {booking.booking_code} is shown on the equipment page.</p>
+        <Link className="flow-primary" href={`/equipment-details?code=${encodeURIComponent(booking.equipment_code)}`}>
+          View equipment <ArrowRight size={15} />
+        </Link>
+      </section>
     );
   }
 

@@ -187,7 +187,7 @@ export default function EngineModulesPage() {
       <div className="flex items-center justify-between pb-4 border-b border-slate-200">
         <div>
           <h1 className="text-2xl font-black text-slate-900 tracking-tight">Module Master</h1>
-          <p className="text-sm text-slate-500">Manage system engine modules and role-based permissions</p>
+          
         </div>
         {!showForm && (
           <div className="flex items-center gap-3">
@@ -306,17 +306,22 @@ export default function EngineModulesPage() {
                 onChange={e => setFormData({ ...formData, icon: e.target.value })} 
               />
             </div>
-            <div>
-              <label className="block text-xs font-bold uppercase text-slate-600 mb-2">Sequence (Optional)</label>
-              <input 
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-emerald-500" 
-                type="number" 
-                value={formData.sequence} 
-                disabled={isViewOnly}
-                placeholder="E.G. 1" 
-                onChange={e => setFormData({ ...formData, sequence: e.target.value })} 
-              />
-            </div>
+            {/* <div>
+            <label className="block text-xs font-bold uppercase text-slate-600 mb-2">
+              Sequence (Optional)
+            </label>
+            <input
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-emerald-500"
+              type="number"
+              value={formData.sequence ?? ""}
+              onChange={(e) =>
+                setFormData((prev) => ({
+                  ...prev,
+                  sequence: e.target.value === "" ? "" : Number(e.target.value),
+                }))
+              }
+            />
+          </div> */}
             <div>
               <label className="block text-xs font-bold uppercase text-slate-600 mb-2">Status</label>
               <select 

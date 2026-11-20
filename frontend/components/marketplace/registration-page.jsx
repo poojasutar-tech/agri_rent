@@ -1,14 +1,32 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ArrowRight, Check, Loader2 } from "lucide-react";
 import { AuthShell, TextField } from "./shared";
+import api from "../../app/utils/domain";
 
 export default function Registration() {
   const [submitted, setSubmitted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [countries, setCountries] = useState([]);
+  const [countryCode, setCountryCode] = useState("");
+  const [countriesError, setCountriesError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get("api/countries/")
+      .then(({ data }) => {
+        if (!cancelled) {
+          setCountries((Array.isArray(data) ? data : []).filter((country) => Number(country.status) === 1));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setCountriesError("Country options could not be loaded.");
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -18,6 +36,7 @@ export default function Registration() {
     const formData = new FormData(event.currentTarget);
     const fullName = formData.get("fullName");
     const farm = formData.get("farm");
+    const selectedCountryCode = formData.get("country_code");
     const email = formData.get("email");
     const mobile = formData.get("mobile");
     const password = formData.get("password");
@@ -50,29 +69,23 @@ export default function Registration() {
     }
 
     try {
-      const response = await fetch("http://127.0.0.1:8000/api/auth/register/", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_code: "USER-" + Math.floor(1000 + Math.random() * 9000),
-          full_name: fullName,
-          farm_name: farm,
-          email: email,
-          mobile: mobile,
-          password: password,
-          role: "FARMER"
-        }),
+      await api.post("api/auth/register/", {
+        full_name: fullName,
+        farm_name: farm,
+        country_code: selectedCountryCode,
+        email,
+        mobile,
+        password,
       });
 
-      const data = await response.json();
-
-      if (response.ok) {
-        setSubmitted(true);
-      } else {
-        setError(data.error || Object.values(data)[0] || "Registration failed.");
-      }
+      setSubmitted(true);
     } catch (err) {
-      setError("Unable to connect to the server. Please check your backend.");
+      const responseData = err?.response?.data;
+      setError(
+        responseData?.error ||
+          (responseData && Object.values(responseData)[0]) ||
+          "Unable to connect to the server. Please check your backend."
+      );
     } finally {
       setLoading(false);
     }
@@ -114,6 +127,23 @@ export default function Registration() {
             label="Farm or business name"
             placeholder="e.g. North Valley Farm"
           />
+          <label className="flow-field">
+            <span>Country</span>
+            <select
+              name="country_code"
+              value={countryCode}
+              onChange={(event) => setCountryCode(event.target.value)}
+              required
+            >
+              <option value="">Select your country</option>
+              {countries.map((country) => (
+                <option key={country.country_code} value={country.country_code}>
+                  {country.country_name}
+                </option>
+              ))}
+            </select>
+            {countriesError && <small role="alert">{countriesError}</small>}
+          </label>
           <TextField
             name="email"
             label="Email address"

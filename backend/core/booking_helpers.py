@@ -3,36 +3,28 @@
 # =====================================================================
 #  IMPORTS
 # =====================================================================
-from datetime import date, datetime, time
-from decimal import Decimal, ROUND_HALF_UP
-
-import razorpay
-from django.conf import settings
-from django.db import transaction
-from django.utils import timezone
-from rest_framework import serializers, status
-from rest_framework.permissions import AllowAny
-from rest_framework.response import Response
-from rest_framework.views import APIView
-
+import logging
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
 import razorpay
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
+from django.core.mail import send_mail
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
 
 from .models import BookingStatusHistory, Payments
 
+logger = logging.getLogger(__name__)
+
 # from .models import (
 #     Bookings, BookingStatusHistory, Payments, Reviews,
 #     Equipment, FarmerProfiles, Users,
 # )
 
-# Keep in sync with PLATFORM_FEE_PERCENT in marketplace-api.js (frontend)
-PLATFORM_FEE_PERCENT = Decimal('5')
+PLATFORM_FEE_PERCENT = Decimal(settings.PLATFORM_FEE_PERCENT)
 MAX_RENTAL_DAYS = 30
 
 
@@ -62,7 +54,11 @@ def money(value):
 
 
 def razorpay_client():
-    return razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
+    key_id = getattr(settings, 'RAZORPAY_KEY_ID', '')
+    key_secret = getattr(settings, 'RAZORPAY_KEY_SECRET', '')
+    if not key_id or not key_secret:
+        raise ImproperlyConfigured("Razorpay credentials are not configured.")
+    return razorpay.Client(auth=(key_id, key_secret))
 
 
 def log_status(booking, old, new, remarks, user=None):
@@ -82,3 +78,26 @@ def error(message, code=status.HTTP_400_BAD_REQUEST):
 
 def latest_payment(booking):
     return Payments.objects.filter(booking_code=booking).order_by('-id').first()
+
+
+def send_booking_email(booking, subject, message):
+    recipient = booking.farmer_code.user_code.email
+    sender = settings.DEFAULT_FROM_EMAIL
+    if not recipient or not sender:
+        logger.error(
+            "Cannot send booking email for %s: renter email or sender address is missing.",
+            booking.booking_code,
+        )
+        return False
+
+    try:
+        return send_mail(
+            subject,
+            message,
+            sender,
+            [recipient],
+            fail_silently=False,
+        ) == 1
+    except Exception:
+        logger.exception("Could not send booking email for %s.", booking.booking_code)
+        return False

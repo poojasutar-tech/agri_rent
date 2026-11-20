@@ -8,6 +8,7 @@ import base64
 from django.db import transaction
 from rest_framework import serializers
 from .models import Users
+from .booking_helpers import latest_payment, money
 
 class UsersSerializer(serializers.ModelSerializer):
     class Meta:
@@ -329,6 +330,14 @@ class BookingsSerializer(serializers.ModelSerializer):
     farmer_code = serializers.SlugRelatedField(slug_field='farmer_code', read_only=True)
     equipment_name = serializers.CharField(source='equipment_code.equipment_name', read_only=True)
     farmer_name = serializers.CharField(source='farmer_code.user_code.full_name', read_only=True)
+    owner_user_code = serializers.CharField(
+        source='equipment_code.farmer_code.user_code_id',
+        read_only=True,
+    )
+    renter_user_code = serializers.CharField(
+        source='farmer_code.user_code_id',
+        read_only=True,
+    )
 
     # derived fields (no extra DB columns needed)
     platform_fee = serializers.SerializerMethodField()
@@ -339,6 +348,7 @@ class BookingsSerializer(serializers.ModelSerializer):
         model = Bookings
         fields = [
             'booking_code', 'equipment_code', 'equipment_name', 'farmer_code', 'farmer_name',
+            'owner_user_code', 'renter_user_code',
             'booking_date', 'start_date', 'end_date',
             'rental_duration', 'rental_duration_unit',
             'rental_amount', 'security_deposit', 'delivery_charge', 'platform_fee', 'total_amount',
