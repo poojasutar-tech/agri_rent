@@ -146,13 +146,25 @@ export default function RatingReview({ bookingCode }) {
     );
   }
 
-  if (booking.booking_status !== "COMPLETED") {
+  if (booking.renter_user_code !== user.userCode) {
     return shell(
       <section className="flow-form-card">
-        <h2>This rental is not complete yet</h2>
-        <p>You can leave a review after the equipment owner marks the rental complete.</p>
+        <h2>This booking cannot be reviewed by this account</h2>
+        <p>Only the renter who made the booking can submit its review.</p>
         <Link className="flow-primary" href="/equipment">
-          Back to equipment <ArrowRight size={15} />
+          View equipment <ArrowRight size={15} />
+        </Link>
+      </section>
+    );
+  }
+
+  if (booking.payment_status !== "SUCCESS") {
+    return shell(
+      <section className="flow-form-card">
+        <h2>Payment is required before reviewing</h2>
+        <p>Complete payment for booking {booking.booking_code} before submitting a review.</p>
+        <Link className="flow-primary" href="/equipment">
+          View equipment <ArrowRight size={15} />
         </Link>
       </section>
     );

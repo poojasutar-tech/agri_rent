@@ -371,7 +371,7 @@ class Rentals(models.Model):
 
 class Reviews(models.Model):
     review_code = models.CharField(unique=True, max_length=45)
-    booking_code = models.OneToOneField(Bookings, models.DO_NOTHING, db_column='booking_code')
+    booking_code = models.OneToOneField(Bookings, models.DO_NOTHING, db_column='booking_code',to_field='booking_code')
     equipment_code = models.ForeignKey('Equipment', models.DO_NOTHING, db_column='equipment_code', to_field='equipment_code')
     farmer_code = models.ForeignKey('FarmerProfiles', models.DO_NOTHING, db_column='farmer_code', to_field='farmer_code')
     rating = models.IntegerField()

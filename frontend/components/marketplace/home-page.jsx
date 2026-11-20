@@ -2,29 +2,17 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ArrowRight, ArrowLeft, Wheat, CheckCircle2, MapPin, Search, ShieldCheck,
   Sprout, Tractor, Compass, Clock, Award, PhoneCall, Truck, Wrench,
   Wallet, Users, Star, Loader2
 } from "lucide-react";
-import { FlowFrame, MachineCard } from "./shared";
+import { FlowFrame } from "./shared";
+// ⚠️ Adjust this path to wherever your axios instance lives relative to THIS file
+import api from "../../app/utils/domain";
 
 const REVIEW_MS = 5000;
-
-const reviews = [
-  { quote: "We needed a plow and a planter for one week. Both came on time, worked well, and saved us a lot of money.", name: "Morgan Reynolds", role: "Crop farmer", farm: "Yolo County", metric: "No delays" },
-  { quote: "Every machine arrived clean, oiled and ready for the field. Harvest days are much easier for our family now.", name: "Jamie Lindqvist", role: "Family farmer", farm: "Woodland", metric: "Saved $52,000" },
-  { quote: "Renting out our harvester in quiet weeks paid for our winter repair bill. Payments are safe and the neighbors are good.", name: "Casey Thornton", role: "Grain farmer", farm: "Davis", metric: "Trusted owner" },
-  { quote: "Fair daily prices, clear photos, and helpful people on the phone when we need them. Very easy to use.", name: "Elena Vance-Kerr", role: "Farm owner", farm: "Sierra Valley", metric: "14 rentals done" },
-  { quote: "Why leave costly tools in the shed all year? We rent what we need from farmers down the road.", name: "Marcus Holloway", role: "Orchard farmer", farm: "Riverbend Farms", metric: "Booked in 10 min" },
-];
-
-const categories = [
-  { title: "Tractors", detail: "Small and big tractors for pulling and heavy work", icon: Tractor, count: "184 available" },
-  { title: "Harvesters", detail: "Cut and collect your crop quickly", icon: Wheat, count: "62 available" },
-  { title: "Plows and seeders", detail: "Plows, tillers and seed planters for sowing on time", icon: Sprout, count: "96 available" },
-  { title: "Sprayers and tools", detail: "Sprayers, water tanks, trailers and grass cutters", icon: Compass, count: "86 available" },
-];
 
 const steps = [
   { title: "Find a machine near you", body: "Choose your area and see tractors, plows and harvesters nearby." },
@@ -39,6 +27,156 @@ const partners = [
   { name: "Green Acres Collective", region: "San Joaquin", acres: "31,000+ acres" },
   { name: "Sierra Foothill Farms", region: "Placer and Sutter", acres: "19,000+ acres" },
 ];
+
+function resolveCategoryIcon(title = "") {
+  const normalized = String(title).toLowerCase();
+  if (normalized.includes("harvest")) return Wheat;
+  if (
+    normalized.includes("plow") ||
+    normalized.includes("seed") ||
+    normalized.includes("till") ||
+    normalized.includes("rotavator")
+  ) {
+    return Sprout;
+  }
+  if (
+    normalized.includes("spray") ||
+    normalized.includes("tool") ||
+    normalized.includes("trailer") ||
+    normalized.includes("pump")
+  ) {
+    return Compass;
+  }
+  return Tractor;
+}
+
+function detectImageMimeFromBase64(b64 = "") {
+  const clean = b64.trim();
+  if (clean.startsWith("/9j/")) return "image/jpeg";
+  if (clean.startsWith("iVBORw0KGgo")) return "image/png";
+  if (clean.startsWith("R0lGODlh") || clean.startsWith("R0lGODdh")) return "image/gif";
+  if (clean.startsWith("UklGR")) return "image/webp";
+  if (clean.startsWith("PHN2Zy") || clean.startsWith("PD94bWw")) return "image/svg+xml";
+  return "image/jpeg";
+}
+
+function bytesToBase64(bytes) {
+  if (!Array.isArray(bytes) || bytes.length === 0 || typeof window === "undefined") {
+    return "";
+  }
+  let binary = "";
+  const chunkSize = 8192;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const slice = bytes.slice(i, i + chunkSize);
+    for (let j = 0; j < slice.length; j += 1) {
+      binary += String.fromCharCode(Number(slice[j]) & 0xff);
+    }
+  }
+  return window.btoa(binary);
+}
+
+function resolveCategoryImage(cat = {}) {
+  const raw =
+    cat.category_image ??
+    cat.category_image_base64 ??
+    cat.display_category_image ??
+    cat.image ??
+    "";
+  if (!raw) return "";
+
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed === "null" || trimmed === "None") return "";
+    if (
+      trimmed.startsWith("data:image/") ||
+      trimmed.startsWith("http://") ||
+      trimmed.startsWith("https://") ||
+      trimmed.startsWith("blob:")
+    ) {
+      return trimmed;
+    }
+    if (trimmed.startsWith("/")) {
+      const base =
+        (api?.defaults?.baseURL || "").replace(/\/+$/, "") ||
+        (typeof window !== "undefined" ? window.location.origin : "");
+      return base ? `${base}${trimmed}` : trimmed;
+    }
+
+    // Handle Python byte-string representation like b'\x89PNG...'
+    if (
+      (trimmed.startsWith("b'") && trimmed.endsWith("'")) ||
+      (trimmed.startsWith('b"') && trimmed.endsWith('"'))
+    ) {
+      const inner = trimmed.slice(2, -1);
+      if (typeof window !== "undefined") {
+        try {
+          const decoded = inner.replace(/\\x([0-9A-Fa-f]{2})/g, (_, hex) =>
+            String.fromCharCode(parseInt(hex, 16))
+          );
+          const b64 = window.btoa(decoded);
+          const mime = detectImageMimeFromBase64(b64);
+          return `data:${mime};base64,${b64}`;
+        } catch {
+          // Fall through to standard base64 handling
+        }
+      }
+    }
+
+    const cleanBase64 = trimmed.replace(/\s+/g, "");
+    const mime = detectImageMimeFromBase64(cleanBase64);
+    return `data:${mime};base64,${cleanBase64}`;
+  }
+
+  if (typeof raw === "object") {
+    const bytes = Array.isArray(raw)
+      ? raw
+      : Array.isArray(raw.data)
+      ? raw.data
+      : null;
+    if (bytes && bytes.length > 0) {
+      const b64 = bytesToBase64(bytes);
+      if (b64) {
+        const mime = detectImageMimeFromBase64(b64);
+        return `data:${mime};base64,${b64}`;
+      }
+    }
+  }
+
+  return "";
+}
+
+function normalizeListResponse(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (payload && Array.isArray(payload.results)) return payload.results;
+  if (payload && Array.isArray(payload.data)) return payload.data;
+  return [];
+}
+
+function isUserSignedIn() {
+  if (typeof window === "undefined") return false;
+  const authKeys = [
+    "access_token",
+    "access",
+    "token",
+    "authToken",
+    "refresh_token",
+    "agrirent_token",
+    "full_name",
+    "user_code",
+    "user",
+    "currentUser",
+    "agrirent_user",
+  ];
+  const hasStorageAuth = authKeys.some((key) => {
+    const localVal = window.localStorage.getItem(key);
+    const sessionVal = window.sessionStorage.getItem(key);
+    const raw = localVal || sessionVal;
+    return Boolean(raw && raw !== "null" && raw !== "undefined");
+  });
+  const hasCookieAuth =
+    typeof document !== "undefined" && document.cookie.includes("is_logged_in=1");
+  return hasStorageAuth || hasCookieAuth;
+}
 
 function useHomeMotion() {
   const rootRef = useRef(null);
@@ -94,59 +232,238 @@ function useSpotlightTilt() {
 }
 
 export default function MarketplaceHome() {
+  const router = useRouter();
   const mainRef = useHomeMotion();
   const tilt = useSpotlightTilt();
 
   const trackRef = useRef(null);
   const [active, setActive] = useState(0);
   const [paused, setPaused] = useState(false);
+  const [isMobileGrid, setIsMobileGrid] = useState(false);
+  const [brokenImages, setBrokenImages] = useState({});
 
-  // Dynamic Equipment state from Django Backend
-  const [machinesList, setMachinesList] = useState([]);
-  const [loadingMachines, setLoadingMachines] = useState(true);
+  // Geolocation state for customer's current location
+  const [userLocation, setUserLocation] = useState(null); // { latitude, longitude, accuracy, label }
+  const [geoStatus, setGeoStatus] = useState("idle"); // idle | locating | granted | denied | error | unsupported
+  const [geoError, setGeoError] = useState("");
+
+  // Dynamic Categories state from Backend (strictly 3 on Home)
+  const [categoriesList, setCategoriesList] = useState([]);
+  const [loadingCategories, setLoadingCategories] = useState(true);
+
+  // Dynamic Reviews state from Backend
+  const [reviewsList, setReviewsList] = useState([]);
+  const [loadingReviews, setLoadingReviews] = useState(true);
 
   useEffect(() => {
-    async function fetchEquipment() {
-      try {
-        const res = await fetch("http://127.0.0.1:8000/api/equipment/");
-        if (res.ok) {
-          const data = await res.json();
-          // Map backend fields securely to your card component requirements
-          const mappedData = data.map((item) => ({
-            name: item.name || item.equipment_name || "Farm Machine",
-            category: item.category_name || item.category || "Tractor · 130 HP",
-            place: item.location || item.place || "Davis, CA",
-            rate: item.daily_rate || item.rate || 500,
-            image: item.image_url || item.image || "https://images.unsplash.com/photo-1530267981375-f0de937f5f13?auto=format&fit=crop&w=900&q=85",
-            rating: item.rating || "4.9",
-            description: item.description || "",
-            specs: item.specs || ["4WD", "Cabin", "GPS ready"]
-          }));
-          setMachinesList(mappedData);
+    const updateGridCols = () => {
+      setIsMobileGrid(window.innerWidth < 768);
+    };
+    updateGridCols();
+    window.addEventListener("resize", updateGridCols);
+    return () => window.removeEventListener("resize", updateGridCols);
+  }, []);
+
+  const handleRequestLocation = useCallback(() => {
+    if (typeof window === "undefined" || !("geolocation" in navigator)) {
+      setGeoStatus("unsupported");
+      setGeoError("Geolocation is not supported by this browser.");
+      return;
+    }
+
+    setGeoStatus("locating");
+    setGeoError("");
+
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const { latitude, longitude, accuracy } = pos.coords;
+        let resolvedLabel = `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+
+        try {
+          const geoRes = await api.get("api/reverse-geocode/", {
+            params: { lat: latitude, lng: longitude },
+          });
+          const dynamicName =
+            geoRes?.data?.place ||
+            geoRes?.data?.city ||
+            geoRes?.data?.address ||
+            geoRes?.data?.label;
+          if (dynamicName) {
+            resolvedLabel = String(dynamicName);
+          }
+        } catch {
+          // Keep coordinate label if reverse geocode endpoint is not configured
         }
+
+        setUserLocation({
+          latitude,
+          longitude,
+          accuracy,
+          label: resolvedLabel,
+        });
+        setGeoStatus("granted");
+        setGeoError("");
+      },
+      (err) => {
+        setGeoError("");
+        switch (err?.code) {
+          case err?.PERMISSION_DENIED:
+            setGeoStatus("denied");
+            setGeoError("Location permission was denied.");
+            break;
+          case err?.POSITION_UNAVAILABLE:
+            setGeoStatus("error");
+            setGeoError("Current location is unavailable.");
+            break;
+          case err?.TIMEOUT:
+            setGeoStatus("error");
+            setGeoError("Location request timed out.");
+            break;
+          default:
+            setGeoStatus("error");
+            setGeoError("Could not obtain your current location.");
+            break;
+        }
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 60000,
+      }
+    );
+  }, []);
+
+  const buildLocationTargetPath = useCallback(
+    (basePath = "/equipment") => {
+      if (!userLocation) return basePath;
+      const sep = basePath.includes("?") ? "&" : "?";
+      return `${basePath}${sep}lat=${encodeURIComponent(userLocation.latitude)}&lng=${encodeURIComponent(userLocation.longitude)}`;
+    },
+    [userLocation]
+  );
+
+  const handleSeeMoreNavigation = useCallback(
+    (e, targetPath = "/equipment") => {
+      e.preventDefault();
+      const resolvedPath = buildLocationTargetPath(targetPath);
+      if (isUserSignedIn()) {
+        router.push(resolvedPath);
+      } else {
+        router.push(`/login?next=${encodeURIComponent(resolvedPath)}`);
+      }
+    },
+    [router, buildLocationTargetPath]
+  );
+
+  useEffect(() => {
+    async function fetchCategories() {
+      try {
+        const res = await api.get("api/equipment_categories/");
+        const rawData = res?.data;
+        const list = normalizeListResponse(rawData);
+
+        const filtered = list.filter((cat) =>
+          cat.status === undefined || cat.status === null ? true : Number(cat.status) === 1
+        );
+
+        const sorted = [...filtered].sort((a, b) => {
+          const orderA = a.sort_order ?? Number.MAX_SAFE_INTEGER;
+          const orderB = b.sort_order ?? Number.MAX_SAFE_INTEGER;
+          return orderA - orderB;
+        });
+
+        const mappedCategories = sorted.slice(0, 3).map((cat, idx) => {
+          const title =
+            cat.category_name || cat.title || cat.name || `Category ${idx + 1}`;
+          const rawCount =
+            cat.count ??
+            cat.available_count ??
+            cat.equipment_count ??
+            cat.total_machines;
+          const countText =
+            typeof rawCount === "number"
+              ? `${rawCount} available`
+              : rawCount || "";
+
+          return {
+            ...cat,
+            id: cat.category_code || cat.id || cat.code || idx,
+            category_code: cat.category_code || cat.code || "",
+            category_name: title,
+            title,
+            detail:
+              cat.description ||
+              cat.detail ||
+              "Reliable farm equipment ready for field work",
+            imageSrc: resolveCategoryImage(cat),
+            icon: resolveCategoryIcon(title),
+            count: countText,
+          };
+        });
+
+        setBrokenImages({});
+        setCategoriesList(mappedCategories);
       } catch (err) {
-        console.error("Failed to fetch equipment list:", err);
+        console.error("Failed to fetch equipment categories:", err);
       } finally {
-        setLoadingMachines(false);
+        setLoadingCategories(false);
       }
     }
-    fetchEquipment();
+
+    async function fetchReviews() {
+      try {
+        const res = await api.get("api/reviews/");
+        const rawData = res?.data;
+        const list = normalizeListResponse(rawData);
+        const mappedReviews = list
+          .filter((rev) => typeof rev.review_comment === "string" && rev.review_comment.trim())
+          .map((rev, idx) => {
+            const authorName = rev.farmer_name || `Farmer ${idx + 1}`;
+            return {
+              ...rev,
+              id: rev.review_code || idx,
+              quote: rev.review_comment.trim(),
+              name: authorName,
+              role: "Farmer",
+              farm: rev.farm_name || "Local Farm",
+              metric: rev.rating ? `${rev.rating}★ rating` : "Verified rental",
+            };
+          });
+        setReviewsList(mappedReviews);
+        setActive(0);
+      } catch (err) {
+        console.error("Failed to fetch reviews:", err);
+      } finally {
+        setLoadingReviews(false);
+      }
+    }
+
+    fetchCategories();
+    fetchReviews();
   }, []);
 
   useEffect(() => {
     const track = trackRef.current;
     const card = track?.querySelectorAll(".ent-review-card")[active];
-    if (card) track.scrollTo({ left: card.offsetLeft - track.offsetLeft, behavior: "smooth" });
-  }, [active]);
+    if (card && track) {
+      track.scrollTo({ left: card.offsetLeft - track.offsetLeft, behavior: "smooth" });
+    }
+  }, [active, reviewsList.length]);
 
   useEffect(() => {
-    if (paused) return;
-    const t = setTimeout(() => setActive((i) => (i + 1) % reviews.length), REVIEW_MS);
+    if (paused || reviewsList.length <= 1) return;
+    const t = setTimeout(() => setActive((i) => (i + 1) % reviewsList.length), REVIEW_MS);
     return () => clearTimeout(t);
-  }, [active, paused]);
+  }, [active, paused, reviewsList.length]);
 
-  const step = (dir) =>
-    setActive((i) => (dir === "next" ? (i + 1) % reviews.length : (i - 1 + reviews.length) % reviews.length));
+  const step = (dir) => {
+    if (reviewsList.length === 0) return;
+    setActive((i) =>
+      dir === "next" ? (i + 1) % reviewsList.length : (i - 1 + reviewsList.length) % reviewsList.length
+    );
+  };
+
+  const farmAreaText = userLocation?.label || "Tap to use your current location";
 
   return (
     <FlowFrame active="Home">
@@ -171,7 +488,7 @@ export default function MarketplaceHome() {
                 Clear daily prices, full insurance, and delivery to your farm.
               </p>
               <div className="ent-hero-actions hero-stagger-4">
-                <Link className="ent-btn-primary" href="/equipment">
+                <Link className="ent-btn-primary" href="/equipment" onClick={(e) => handleSeeMoreNavigation(e, "/equipment")}>
                   <span>See available machines</span>
                   <ArrowRight size={16} className="ent-arrow" />
                 </Link>
@@ -186,7 +503,7 @@ export default function MarketplaceHome() {
 
             <aside className="ent-hero-card hero-stagger-5" aria-label="Today near you">
               <div className="ent-hero-card-top">
-                <span className="ent-live-dot" /> Available today near Davis
+                <span className="ent-live-dot" /> Available today {userLocation?.label ? `near ${userLocation.label}` : "near you"}
               </div>
               <strong>38 machines</strong>
               <p>ready to book this week</p>
@@ -200,7 +517,24 @@ export default function MarketplaceHome() {
         <section className="ent-command-bar" data-reveal>
           <div className="ent-command-field">
             <span className="ent-command-icon"><MapPin size={18} /></span>
-            <div><label>Where is your farm?</label><strong>Davis and nearby villages</strong></div>
+            <div>
+              <label>Where is your farm?</label>
+              <strong>{farmAreaText}</strong>
+              {geoStatus === "locating" && <small className="ent-mini-label">Detecting location…</small>}
+              {geoError && <small className="ent-mini-label">{geoError}</small>}
+            </div>
+            <button
+              type="button"
+              className="ent-quick-tag"
+              onClick={handleRequestLocation}
+              disabled={geoStatus === "locating"}
+            >
+              {geoStatus === "locating"
+                ? "Locating…"
+                : userLocation
+                  ? "Update location"
+                  : "Use my location"}
+            </button>
           </div>
           <div className="ent-command-sep" />
           <div className="ent-command-field">
@@ -212,42 +546,12 @@ export default function MarketplaceHome() {
             <span className="ent-command-icon"><Clock size={18} /></span>
             <div><label>When do you need it?</label><strong>Today or this week</strong></div>
           </div>
-          <Link className="ent-btn-primary ent-command-submit" href="/equipment">
+          <Link className="ent-btn-primary ent-command-submit" href="/equipment" onClick={(e) => handleSeeMoreNavigation(e, "/equipment")}>
             <Search size={16} /><span>Find machines</span>
           </Link>
         </section>
 
-        {/* 3. POPULAR MACHINES (DYNAMIC API FETCH) */}
-        <section className="ent-section" data-reveal>
-          <div className="ent-section-head">
-            <div>
-              <span className="ent-kicker">Ready to work</span>
-              <h2>Popular machines near your farm</h2>
-              <p>Clean, strong machines from local owners you can trust.</p>
-            </div>
-            <Link href="/equipment" className="ent-link-action">
-              <span>See all machines</span><ArrowRight size={15} className="ent-arrow" />
-            </Link>
-          </div>
-
-          {loadingMachines ? (
-            <div style={{ display: "flex", justifyContent: "center", padding: "60px 0", color: "#16a34a" }}>
-              <Loader2 className="animate-spin" size={36} />
-            </div>
-          ) : machinesList.length === 0 ? (
-            <p style={{ textAlign: "center", padding: "40px 0", color: "#6b7280" }}>No equipment available at the moment.</p>
-          ) : (
-            <div className="flow-machine-grid ent-machine-wrapper">
-              {machinesList.map((m, i) => (
-                <div key={m.name || i} className="ent-card-slot" style={{ "--stagger": `${i * 75}ms` }} {...tilt}>
-                  <MachineCard item={m} />
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
-        {/* 4. CATEGORIES */}
+        {/* 3. EQUIPMENT CATEGORIES (DYNAMIC API FETCH - FULL WIDTH DB IMAGE, NO AVAILABLE BADGE) */}
         <section className="ent-section" data-reveal>
           <div className="ent-section-head">
             <div>
@@ -255,23 +559,106 @@ export default function MarketplaceHome() {
               <h2>What work do you need to do?</h2>
               <p>From preparing the soil to cutting the crop, find every tool in one place.</p>
             </div>
+            <Link
+              href="/equipment"
+              onClick={(e) => handleSeeMoreNavigation(e, "/equipment")}
+              className="ent-link-action"
+            >
+              <span>See more</span><ArrowRight size={15} className="ent-arrow" />
+            </Link>
           </div>
-          <div className="ent-cat-grid">
-            {categories.map(({ title, detail, icon: Icon, count }) => (
-              <Link href="/equipment" key={title} className="ent-cat-card" {...tilt}>
-                <div className="ent-cat-top">
-                  <span className="ent-cat-icon"><Icon size={22} /></span>
-                  <span className="ent-cat-count">{count}</span>
-                </div>
-                <h3>{title}</h3>
-                <p>{detail}</p>
-                <div className="ent-cat-foot"><span>Browse</span><ArrowRight size={15} className="ent-arrow" /></div>
-              </Link>
-            ))}
-          </div>
+
+          {loadingCategories ? (
+            <div style={{ display: "flex", justifyContent: "center", padding: "48px 0", color: "#16a34a" }}>
+              <Loader2 className="animate-spin" size={32} />
+            </div>
+          ) : categoriesList.length === 0 ? (
+            <p style={{ textAlign: "center", padding: "32px 0", color: "#6b7280" }}>
+              No equipment categories available at the moment.
+            </p>
+          ) : (
+            <div
+              className="ent-cat-grid"
+              style={{
+                display: "grid",
+                gridTemplateColumns: isMobileGrid
+                  ? "repeat(1, minmax(0, 1fr))"
+                  : "repeat(3, minmax(0, 1fr))",
+                width: "100%",
+                maxWidth: "100%",
+              }}
+            >
+              {categoriesList.map((cat) => {
+                const cardKey = cat.id || cat.title;
+                const showDbImage = Boolean(cat.imageSrc) && !brokenImages[cardKey];
+                const targetUrl = cat.category_code
+                  ? `/equipment?category=${encodeURIComponent(cat.category_code)}`
+                  : "/equipment";
+                return (
+                  <Link
+                    href={targetUrl}
+                    onClick={(e) => handleSeeMoreNavigation(e, targetUrl)}
+                    key={cardKey}
+                    className="ent-cat-card"
+                    style={{
+                      width: "100%",
+                      maxWidth: "none",
+                      overflow: "hidden",
+                      padding: 0,
+                      display: "flex",
+                      flexDirection: "column",
+                    }}
+                    {...tilt}
+                  >
+                    {showDbImage ? (
+                      <div
+                        className="ent-cat-media"
+                        style={{
+                          width: "100%",
+                          height: "200px",
+                          overflow: "hidden",
+                          backgroundColor: "#f1f5f9",
+                        }}
+                      >
+                        <img
+                          src={cat.imageSrc}
+                          alt={cat.title}
+                          onError={() =>
+                            setBrokenImages((prev) => ({ ...prev, [cardKey]: true }))
+                          }
+                          style={{
+                            width: "100%",
+                            height: "100%",
+                            objectFit: "cover",
+                            display: "block",
+                          }}
+                        />
+                      </div>
+                    ) : null}
+
+                    <div
+                      style={{
+                        padding: "20px 22px 22px",
+                        display: "flex",
+                        flexDirection: "column",
+                        flex: 1,
+                      }}
+                    >
+                      <h3>{cat.title}</h3>
+                      <p style={{ flex: 1 }}>{cat.detail}</p>
+                      <div className="ent-cat-foot">
+                        <span>Browse</span>
+                        <ArrowRight size={15} className="ent-arrow" />
+                      </div>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          )}
         </section>
 
-        {/* 5. WHY RENT */}
+        {/* 4. WHY RENT */}
         <section className="ent-section" id="why-rent" data-reveal aria-labelledby="why-heading">
           <div className="ent-section-head">
             <div>
@@ -324,7 +711,7 @@ export default function MarketplaceHome() {
                   <h4>Earn money when your machine is not in use</h4>
                   <p>Rent your tractor, plow or sprayer to nearby farmers and earn extra income every season.</p>
                 </div>
-                <Link href="/equipment" className="ent-btn-secondary">
+                <Link href="/equipment" onClick={(e) => handleSeeMoreNavigation(e, "/equipment")} className="ent-btn-secondary">
                   <span>List your machine</span><ArrowRight size={15} className="ent-arrow" />
                 </Link>
               </div>
@@ -332,14 +719,14 @@ export default function MarketplaceHome() {
           </div>
         </section>
 
-        {/* 6. HOW IT WORKS */}
+        {/* 5. HOW IT WORKS */}
         <section className="ent-section ent-workflow-wrap" id="booking" data-reveal>
           <div className="ent-workflow-grid">
             <div className="ent-workflow-intro">
               <span className="ent-kicker">Simple and quick</span>
               <h2>Rent a machine in 3 steps</h2>
               <p>No difficult paperwork. Pick a machine, choose your dates, and start working.</p>
-              <Link className="ent-btn-primary" href="/equipment">
+              <Link className="ent-btn-primary" href="/equipment" onClick={(e) => handleSeeMoreNavigation(e, "/equipment")}>
                 <span>Start now</span><ArrowRight size={15} className="ent-arrow" />
               </Link>
             </div>
@@ -355,7 +742,7 @@ export default function MarketplaceHome() {
           </div>
         </section>
 
-        {/* 7. REVIEWS */}
+        {/* 6. REVIEWS (DYNAMIC API FETCH) */}
         <section
           className="ent-section"
           id="reviews"
@@ -363,7 +750,6 @@ export default function MarketplaceHome() {
           aria-labelledby="reviews-heading"
           onMouseEnter={() => setPaused(true)}
           onMouseLeave={() => setPaused(false)}
-          onTouchStart={() => setPaused(true)}
         >
           <div className="ent-section-head">
             <div>
@@ -382,61 +768,85 @@ export default function MarketplaceHome() {
                     cx="18" cy="18" r="15"
                   />
                 </svg>
-                <span className="ent-timer-count">{active + 1}/{reviews.length}</span>
+                <span className="ent-timer-count">
+                  {reviewsList.length > 0 ? `${active + 1}/${reviewsList.length}` : "0/0"}
+                </span>
               </div>
-              <button type="button" className="ent-rail-btn" onClick={() => step("prev")} aria-label="Previous review"><ArrowLeft size={16} /></button>
-              <button type="button" className="ent-rail-btn" onClick={() => step("next")} aria-label="Next review"><ArrowRight size={16} /></button>
+              <button type="button" className="ent-rail-btn" onClick={() => step("prev")} aria-label="Previous review" disabled={reviewsList.length === 0}>
+                <ArrowLeft size={16} />
+              </button>
+              <button type="button" className="ent-rail-btn" onClick={() => step("next")} aria-label="Next review" disabled={reviewsList.length === 0}>
+                <ArrowRight size={16} />
+              </button>
               <Link href="/rating-review" className="ent-link-action">
-                <span>All reviews</span><ArrowRight size={14} className="ent-arrow" />
+                <span>See more</span><ArrowRight size={14} className="ent-arrow" />
               </Link>
             </div>
           </div>
 
-          <div className="ent-review-track" ref={trackRef}>
-            {reviews.map((r, i) => (
-              <article
-                key={r.name}
-                className={`ent-review-card ${i === active ? "is-active-review" : ""}`}
-                onClick={() => setActive(i)}
-              >
-                <div className="ent-review-top">
-                  <span className="ent-review-badge"><CheckCircle2 size={13} /> Verified farmer</span>
-                  <span className="ent-review-stars" aria-label="5 out of 5 stars">
-                    {[0, 1, 2, 3, 4].map((n) => <Star key={n} size={13} fill="currentColor" />)}
-                  </span>
-                </div>
-                <blockquote>“{r.quote}”</blockquote>
-                <div className="ent-review-author">
-                  <div className="ent-author-avatar">{r.name.split(" ").map((n) => n[0]).join("")}</div>
-                  <div>
-                    <strong>{r.name}</strong>
-                    <span>{r.role}, {r.farm}</span>
-                  </div>
-                  <em className="ent-review-metric">{r.metric}</em>
-                </div>
-              </article>
-            ))}
-          </div>
-
-          <div className="ent-rail-progress-wrap">
-            <div className="ent-circular-dots" role="tablist" aria-label="Choose a review">
-              {reviews.map((r, i) => (
-                <button
-                  key={r.name}
-                  type="button"
-                  role="tab"
-                  aria-selected={i === active}
-                  aria-label={`Show review from ${r.name}`}
-                  className={`ent-dot-btn ${i === active ? "active" : ""}`}
-                  onClick={() => setActive(i)}
-                />
-              ))}
+          {loadingReviews ? (
+            <div style={{ display: "flex", justifyContent: "center", padding: "48px 0", color: "#16a34a" }}>
+              <Loader2 className="animate-spin" size={32} />
             </div>
-            <span className="ent-rail-hint">{paused ? "Paused while you read" : "Changes every 5 seconds"}</span>
-          </div>
+          ) : reviewsList.length === 0 ? (
+            <p style={{ textAlign: "center", padding: "32px 0", color: "#6b7280" }}>No reviews available yet.</p>
+          ) : (
+            <>
+              <div className="ent-review-track" ref={trackRef}>
+                {reviewsList.map((r, i) => (
+                  <article
+                    key={r.id ?? `${r.name}-${i}`}
+                    className={`ent-review-card ${i === active ? "is-active-review" : ""}`}
+                    onClick={() => setActive(i)}
+                  >
+                    <div className="ent-review-top">
+                      <span className="ent-review-badge"><CheckCircle2 size={13} /> Verified farmer</span>
+                      <span className="ent-review-stars" aria-label="5 out of 5 stars">
+                        {[0, 1, 2, 3, 4].map((n) => <Star key={n} size={13} fill="currentColor" />)}
+                      </span>
+                    </div>
+                    <blockquote>“{r.quote}”</blockquote>
+                    <div className="ent-review-author">
+                      <div className="ent-author-avatar">
+                        {String(r.name)
+                          .split(" ")
+                          .filter(Boolean)
+                          .slice(0, 2)
+                          .map((n) => n[0])
+                          .join("")
+                          .toUpperCase()}
+                      </div>
+                      <div>
+                        <strong>{r.name}</strong>
+                        <span>{r.role}, {r.farm}</span>
+                      </div>
+                      <em className="ent-review-metric">{r.metric}</em>
+                    </div>
+                  </article>
+                ))}
+              </div>
+
+              <div className="ent-rail-progress-wrap">
+                <div className="ent-circular-dots" role="tablist" aria-label="Choose a review">
+                  {reviewsList.map((r, i) => (
+                    <button
+                      key={r.id ?? `${r.name}-${i}`}
+                      type="button"
+                      role="tab"
+                      aria-selected={i === active}
+                      aria-label={`Show review from ${r.name}`}
+                      className={`ent-dot-btn ${i === active ? "active" : ""}`}
+                      onClick={() => setActive(i)}
+                    />
+                  ))}
+                </div>
+                <span className="ent-rail-hint">{paused ? "Paused while you read" : "Changes every 5 seconds"}</span>
+              </div>
+            </>
+          )}
         </section>
 
-        {/* 8. NETWORK */}
+        {/* 7. NETWORK */}
         <section className="ent-section" data-reveal aria-labelledby="network-heading">
           <div className="ent-network-panel">
             <div className="ent-network-head">
@@ -457,7 +867,7 @@ export default function MarketplaceHome() {
           </div>
         </section>
 
-        {/* 9. CONTACT */}
+        {/* 8. CONTACT */}
         <section className="ent-section" id="contact" data-reveal>
           <div className="ent-cta-banner">
             <div className="ent-cta-copy">

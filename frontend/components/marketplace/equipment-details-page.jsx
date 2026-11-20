@@ -249,8 +249,10 @@ export default function EquipmentDetails({ itemName, itemCode }) {
 
   const views = [
     { label: "Photo", node: <img className="detail-main-image ent-zoom" src={item.image} alt={`${item.name} available for rent`} /> },
-    { label: "Details", node: <div className="ent-gallery-tile"><Tractor size={54} /><span>Machine details</span></div> },
-    { label: "Farm ready", node: <div className="ent-gallery-tile green"><Sprout size={54} /><span>Ready for your farm</span></div> },
+    // { label: "Details", node: 
+    // <div className="ent-gallery-tile"><Tractor size={54} /><span>Machine details</span></div> },
+    // { label: "Farm ready", node: <div className="ent-gallery-tile green"><Sprout size={54} /><span>Ready for your farm</span>
+    // </div> },
   ];
 
   return (

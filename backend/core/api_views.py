@@ -1505,7 +1505,7 @@ class BookingStatusUpdateView(APIView):
             if new_status == 'CONFIRMED' and not Payments.objects.filter(
                 booking_code=booking,
             ).filter(
-                Q(payment_gateway='CASH', payment_status='PENDING')
+                Q(payment_gateway='CASH', payment_status__in=['PENDING', 'SUCCESS'])
                 | Q(payment_gateway='RAZORPAY', payment_status='SUCCESS')
             ).exists():
                 return error("Complete online payment or select cash before confirming this booking.")
@@ -1536,18 +1536,25 @@ class BookingStatusUpdateView(APIView):
                     paid_online.updatedon = now
                     paid_online.save()
 
-                cash = Payments.objects.filter(
-                    booking_code=booking, payment_gateway='CASH', payment_status='PENDING'
+                pending_cash = Payments.objects.filter(
+                    booking_code=booking,
+                    payment_gateway='CASH',
+                    payment_status='PENDING',
                 ).first()
-                if cash and new_status == 'COMPLETED':
-                    cash.payment_status = 'SUCCESS'
-                    cash.transaction_date = now
-                    cash.updatedon = now
-                    cash.save()
-                elif cash and new_status in ('REJECTED', 'CANCELLED'):
-                    cash.payment_status = 'FAILED'
-                    cash.updatedon = now
-                    cash.save()
+                if new_status == 'COMPLETED' and pending_cash:
+                    return error(
+                        "Confirm that cash was received before completing this rental."
+                    )
+
+                if new_status in ('REJECTED', 'CANCELLED'):
+                    Payments.objects.filter(
+                        booking_code=booking,
+                        payment_status='PENDING',
+                    ).update(
+                        payment_status='FAILED',
+                        updatedon=now,
+                        updatedby=actor.id,
+                    )
 
                 booking.booking_status = new_status
                 booking.updatedon = now
@@ -1578,10 +1585,10 @@ class BookingStatusUpdateView(APIView):
 # =====================================================================
 #  PAYMENT VIEWS  (Razorpay online  +  Cash)
 # =====================================================================
-def _get_payable_booking(booking_code, user_code):
+def _get_payable_booking(booking_code, user_code, allow_successful_cash=False):
     """
     Returns (booking, error_response).
-    Payable = belongs to this user, still PENDING and not already paid.
+    Payable bookings belong to this user and are still awaiting owner approval.
     """
     booking = _booking_queryset().filter(booking_code=booking_code).first()
     if not booking:
@@ -1590,7 +1597,13 @@ def _get_payable_booking(booking_code, user_code):
         return None, error("This is not your booking.", status.HTTP_403_FORBIDDEN)
     if booking.booking_status != 'PENDING':
         return None, error(f"This booking is already {booking.booking_status}.")
-    if Payments.objects.filter(booking_code=booking, payment_status='SUCCESS').exists():
+    successful_payment = Payments.objects.filter(
+        booking_code=booking,
+        payment_status='SUCCESS',
+    ).order_by('-id').first()
+    if successful_payment and not (
+        allow_successful_cash and successful_payment.payment_gateway == 'CASH'
+    ):
         return None, error("This booking is already paid.")
     return booking, None
 
@@ -1727,9 +1740,6 @@ class RazorpayVerifyView(APIView):
                 payment.save()
 
                 # booking stays PENDING - the owner still has to approve it
-                log_status(booking, booking.booking_status, booking.booking_status,
-                           'Online payment received', user=booking.farmer_code.user_code)
-
             email_sent = send_booking_email(
                 booking,
                 f"Payment received for Agrirent booking {booking.booking_code}",
@@ -1747,82 +1757,217 @@ class RazorpayVerifyView(APIView):
 
 
 class CashPaymentView(APIView):
-    """POST api/payments/cash/   body: { booking_code, user_code }"""
+    """POST api/payments/cash/ records cash as successful when selected."""
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         try:
             booking, err = _get_payable_booking(
-                request.data.get('booking_code'), request.user.user_code
+                request.data.get('booking_code'),
+                request.user.user_code,
+                allow_successful_cash=True,
             )
             if err:
                 return err
 
             with transaction.atomic():
                 booking = Bookings.objects.select_for_update().get(pk=booking.pk)
+                existing_cash = Payments.objects.filter(
+                    booking_code=booking,
+                    payment_gateway='CASH',
+                    payment_status='SUCCESS',
+                ).order_by('-id').first()
+                if existing_cash:
+                    return Response(
+                        PaymentsSerializer(existing_cash).data,
+                        status=status.HTTP_200_OK,
+                    )
+
                 existing = Payments.objects.filter(
                     booking_code=booking, payment_status='PENDING'
                 ).first()
                 if existing:
                     if existing.payment_gateway == 'CASH':
-                        return Response(
-                            PaymentsSerializer(existing).data,
-                            status=status.HTTP_200_OK,
-                        )
-                    return error("Online payment was already selected for this booking.")
-
-                payment = Payments.objects.create(
-                    payment_code=next_code(Payments, 'payment_code', 'PAY'),
-                    booking_code=booking,
-                    farmer_code=booking.farmer_code,
-                    payment_gateway='CASH',
-                    payment_amount=booking.total_amount,
-                    payment_method='CASH',
-                    payment_status='PENDING',
-                    remarks='Customer will pay in cash',
-                    createdon=timezone.now(),
-                    createdby=booking.farmer_code.user_code.id,
-                )
-                log_status(booking, booking.booking_status, booking.booking_status,
-                           'Cash payment selected', user=booking.farmer_code.user_code)
-
+                        now = timezone.now()
+                        existing.payment_status = 'SUCCESS'
+                        existing.transaction_date = now
+                        existing.updatedon = now
+                        existing.updatedby = request.user.id
+                        existing.remarks = 'Cash payment confirmed when selected.'
+                        existing.save(update_fields=[
+                            'payment_status',
+                            'transaction_date',
+                            'updatedon',
+                            'updatedby',
+                            'remarks',
+                        ])
+                        payment = existing
+                    else:
+                        return error("Online payment was already selected for this booking.")
+                else:
+                    now = timezone.now()
+                    payment = Payments.objects.create(
+                        payment_code=next_code(Payments, 'payment_code', 'PAY'),
+                        booking_code=booking,
+                        farmer_code=booking.farmer_code,
+                        payment_gateway='CASH',
+                        payment_amount=booking.total_amount,
+                        payment_method='CASH',
+                        payment_status='SUCCESS',
+                        transaction_date=now,
+                        remarks='Cash payment confirmed when selected.',
+                        createdon=now,
+                        createdby=booking.farmer_code.user_code.id,
+                    )
             email_sent = send_booking_email(
                 booking,
-                f"Booking request received: {booking.booking_code}",
+                f"Cash payment successful: {booking.booking_code}",
                 (
                     f"Hello {booking.farmer_code.user_code.full_name},\n\n"
-                    f"Your booking request for {booking.equipment_code.equipment_name} "
-                    f"({booking.booking_code}) was received. You selected cash payment; "
-                    "the equipment owner must confirm the booking."
+                    f"Your cash payment for booking {booking.booking_code} has been "
+                    "recorded as successful. The equipment owner still needs to confirm "
+                    "the booking."
                 ),
             )
             response_data = PaymentsSerializer(payment).data
             response_data['booking_email_sent'] = email_sent
-            return Response(response_data, status=status.HTTP_201_CREATED)
+            return Response(response_data, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-# =====================================================================
+class CashPaymentConfirmView(APIView):
+    """POST api/payments/cash/confirm/<booking_code>/ after cash is received."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, booking_code):
+        try:
+            with transaction.atomic():
+                booking = _booking_queryset().select_for_update().filter(
+                    booking_code=booking_code
+                ).first()
+                if not booking:
+                    return error("Booking not found.", status.HTTP_404_NOT_FOUND)
+
+                is_owner = booking.equipment_code.farmer_code.user_code_id == request.user.user_code
+                is_admin = (request.user.role or '').upper() == 'ADMIN'
+                if not (is_owner or is_admin):
+                    return error(
+                        "Only the equipment owner can confirm cash receipt.",
+                        status.HTTP_403_FORBIDDEN,
+                    )
+
+                payment = Payments.objects.select_for_update().filter(
+                    booking_code=booking,
+                    payment_gateway='CASH',
+                ).order_by('-id').first()
+                if not payment:
+                    return error("No cash payment was selected for this booking.")
+                if payment.payment_status == 'SUCCESS':
+                    return Response(
+                        PaymentsSerializer(payment).data,
+                        status=status.HTTP_200_OK,
+                    )
+                if payment.payment_status != 'PENDING':
+                    return error(f"This cash payment is {payment.payment_status.lower()}.")
+                if booking.booking_status in ('CANCELLED', 'REJECTED'):
+                    return error("Cash cannot be confirmed for a cancelled booking.")
+
+                now = timezone.now()
+                payment.payment_status = 'SUCCESS'
+                payment.transaction_date = now
+                payment.updatedon = now
+                payment.updatedby = request.user.id
+                payment.remarks = "Cash receipt confirmed by equipment owner."
+                payment.save(update_fields=[
+                    'payment_status',
+                    'transaction_date',
+                    'updatedon',
+                    'updatedby',
+                    'remarks',
+                ])
+
+            email_sent = send_booking_email(
+                booking,
+                f"Cash payment received for Agrirent booking {booking.booking_code}",
+                (
+                    f"Hello {booking.farmer_code.user_code.full_name},\n\n"
+                    f"The equipment owner confirmed receiving your cash payment for "
+                    f"booking {booking.booking_code}."
+                ),
+            )
+            response_data = PaymentsSerializer(payment).data
+            response_data['booking_email_sent'] = email_sent
+            return Response(response_data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+
 #  REVIEW VIEWS
-# =====================================================================
+from django.http import Http404
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from django.db import transaction
+from rest_framework import status
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.parsers import JSONParser, FormParser, MultiPartParser
+
+
 class ReviewsListView(APIView):
     """GET api/reviews/?equipment_code=EQ000001   (published reviews only)"""
     permission_classes = [AllowAny]
 
     def get(self, request):
-        qs = Reviews.objects.select_related(
-            'booking_code', 'equipment_code', 'farmer_code__user_code'
-        ).filter(status=1).order_by('-id')
-        equipment_code = request.query_params.get('equipment_code')
-        if equipment_code:
-            qs = qs.filter(equipment_code=equipment_code)
-        return Response(ReviewsSerializer(qs, many=True).data, status=status.HTTP_200_OK)
+        try:
+            qs = Reviews.objects.select_related(
+                'booking_code', 'equipment_code', 'farmer_code__user_code'
+            ).filter(status=1).order_by('-id')
+
+            equipment_code = request.query_params.get('equipment_code')
+            if equipment_code:
+                qs = qs.filter(equipment_code__equipment_code=equipment_code)
+
+            booking_code = request.query_params.get('booking_code')
+            if booking_code:
+                qs = qs.filter(booking_code__booking_code=booking_code)
+
+            farmer_code = request.query_params.get('farmer_code')
+            if farmer_code:
+                qs = qs.filter(farmer_code__farmer_code=farmer_code)
+
+            serializer = ReviewsSerializer(qs, many=True, context={"request": request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ReviewsDetailView(APIView):
+    """GET api/reviews/<review_code>/"""
+    permission_classes = [AllowAny]
+
+    def get(self, request, review_code):
+        try:
+            obj = get_object_or_404(
+                Reviews.objects.select_related(
+                    'booking_code', 'equipment_code', 'farmer_code__user_code'
+                ),
+                review_code=review_code,
+            )
+            serializer = ReviewsSerializer(obj, context={"request": request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Http404:
+            return Response({"error": "Review not found"}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class ReviewsCreateView(APIView):
     """POST api/reviews/create/   body: { user_code, booking_code, rating 1-5, review_comment }"""
     permission_classes = [IsAuthenticated]
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
 
     def post(self, request):
         try:
@@ -1831,20 +1976,45 @@ class ReviewsCreateView(APIView):
             try:
                 rating = int(data.get('rating'))
             except (TypeError, ValueError):
-                return error("Rating is required.")
-            if rating < 1 or rating > 5:
-                return error("Rating must be between 1 and 5.")
+                return Response({"error": "Rating is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-            booking = _booking_queryset().filter(booking_code=data.get('booking_code')).first()
+            if rating < 1 or rating > 5:
+                return Response({"error": "Rating must be between 1 and 5."}, status=status.HTTP_400_BAD_REQUEST)
+
+            booking_code_val = (data.get('booking_code') or '').strip()
+            if not booking_code_val:
+                return Response({"error": "Booking code is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+            booking = _booking_queryset().filter(booking_code=booking_code_val).first()
             if not booking:
-                return error("Booking not found.", status.HTTP_404_NOT_FOUND)
+                return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
 
             if booking.farmer_code.user_code_id != request.user.user_code:
-                return error("You can only review your own bookings.", status.HTTP_403_FORBIDDEN)
-            if booking.booking_status != 'COMPLETED':
-                return error("You can review a booking once the rental is completed.")
-            if Reviews.objects.filter(booking_code=booking).exists():
-                return error("You already reviewed this booking.")
+                return Response(
+                    {"error": "You can only review your own bookings."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            if not Payments.objects.filter(
+                booking_code__booking_code=booking.booking_code,
+                payment_status='SUCCESS',
+            ).exists():
+                return Response(
+                    {"error": "Complete payment before reviewing this booking."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if Reviews.objects.filter(booking_code__booking_code=booking.booking_code).exists():
+                return Response(
+                    {"error": "You already reviewed this booking."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            user_id = (
+                request.user.id
+                if request.user and request.user.is_authenticated
+                else booking.farmer_code.user_code.id
+            )
 
             with transaction.atomic():
                 review = Reviews.objects.create(
@@ -1854,11 +2024,96 @@ class ReviewsCreateView(APIView):
                     farmer_code=booking.farmer_code,
                     rating=rating,
                     review_comment=(data.get('review_comment') or '').strip() or None,
-                    status=1,
+                    status=int(data.get('status', 1)),
                     createdon=timezone.now(),
-                    createdby=booking.farmer_code.user_code.id,
+                    createdby=user_id,
                 )
 
-            return Response(ReviewsSerializer(review).data, status=status.HTTP_201_CREATED)
+            return Response(
+                ReviewsSerializer(review, context={"request": request}).data,
+                status=status.HTTP_201_CREATED,
+            )
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ReviewsUpdateView(APIView):
+    """PUT api/reviews/update/<review_code>/"""
+    permission_classes = [IsAuthenticated]
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
+
+    def put(self, request, review_code):
+        try:
+            obj = get_object_or_404(
+                Reviews.objects.select_related('farmer_code__user_code'),
+                review_code=review_code,
+            )
+
+            if obj.farmer_code.user_code_id != request.user.user_code and not getattr(request.user, 'is_staff', False):
+                return Response(
+                    {"error": "You can only update your own reviews."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            data = request.data
+
+            if 'rating' in data and data.get('rating') is not None:
+                try:
+                    rating = int(data.get('rating'))
+                except (TypeError, ValueError):
+                    return Response({"error": "Rating must be a valid integer."}, status=status.HTTP_400_BAD_REQUEST)
+                if rating < 1 or rating > 5:
+                    return Response({"error": "Rating must be between 1 and 5."}, status=status.HTTP_400_BAD_REQUEST)
+                obj.rating = rating
+
+            if 'review_comment' in data:
+                obj.review_comment = (data.get('review_comment') or '').strip() or None
+
+            if 'status' in data and data.get('status') is not None:
+                obj.status = int(data.get('status'))
+
+            user_id = (
+                request.user.id
+                if request.user and request.user.is_authenticated
+                else data.get('updatedby')
+            )
+            obj.updatedby = user_id
+            obj.updatedon = timezone.now()
+            obj.save()
+
+            return Response(
+                ReviewsSerializer(obj, context={"request": request}).data,
+                status=status.HTTP_200_OK,
+            )
+        except Http404:
+            return Response({"error": "Review not found"}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ReviewsDeleteView(APIView):
+    """DELETE api/reviews/delete/<review_code>/"""
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, review_code):
+        try:
+            obj = get_object_or_404(
+                Reviews.objects.select_related('farmer_code__user_code'),
+                review_code=review_code,
+            )
+
+            if obj.farmer_code.user_code_id != request.user.user_code and not getattr(request.user, 'is_staff', False):
+                return Response(
+                    {"error": "You can only delete your own reviews."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            obj.delete()
+            return Response(
+                {"message": "Review deleted successfully"},
+                status=status.HTTP_204_NO_CONTENT,
+            )
+        except Http404:
+            return Response({"error": "Review not found"}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

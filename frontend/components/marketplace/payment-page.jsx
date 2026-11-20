@@ -38,7 +38,7 @@ export default function Payment({ bookingCode }) {
   const [method, setMethod] = useState("online"); // "online" (Razorpay) | "cash"
   const [processing, setProcessing] = useState(false);
   const [payError, setPayError] = useState("");
-  const [done, setDone] = useState(null); // null | "online" | "cash"
+  const [done, setDone] = useState(null); // null | "online" | "cash_pending" | "cash_paid"
 
   /* ---------- booking code (prop first, then ?booking= in the URL) ---------- */
   useEffect(() => {
@@ -69,9 +69,14 @@ export default function Payment({ bookingCode }) {
         setBooking(data);
         if (
           data.payment_gateway === "CASH" &&
-          ["PENDING", "SUCCESS"].includes(data.payment_status)
+          data.payment_status === "PENDING"
         ) {
-          setDone("cash");
+          setDone("cash_pending");
+        } else if (
+          data.payment_gateway === "CASH" &&
+          data.payment_status === "SUCCESS"
+        ) {
+          setDone("cash_paid");
         } else if (data.payment_status === "SUCCESS") {
           setDone("online");
         }
@@ -93,11 +98,20 @@ export default function Payment({ bookingCode }) {
 
     try {
       if (method === "cash") {
-        await api.post("api/payments/cash/", {
+        const { data: payment } = await api.post("api/payments/cash/", {
           booking_code: booking.booking_code,
           user_code: user.userCode,
         });
-        setDone("cash");
+        if (payment.payment_status === "SUCCESS") {
+          setDone("cash_paid");
+          setBooking((current) => ({
+            ...current,
+            payment_gateway: "CASH",
+            payment_status: "SUCCESS",
+          }));
+        } else {
+          setDone("cash_pending");
+        }
         return;
       }
 
@@ -148,6 +162,22 @@ export default function Payment({ bookingCode }) {
       setPayError(extractError(err, err?.message || "Payment could not be started."));
     } finally {
       if (!waitingForRazorpay) setProcessing(false);
+    }
+  };
+
+  const handleCashReceived = async () => {
+    setPayError("");
+    setProcessing(true);
+    try {
+      await api.post(
+        `api/payments/cash/confirm/${encodeURIComponent(booking.booking_code)}/`
+      );
+      setDone("cash_paid");
+      setBooking((current) => ({ ...current, payment_status: "SUCCESS" }));
+    } catch (err) {
+      setPayError(extractError(err, "Cash receipt could not be confirmed."));
+    } finally {
+      setProcessing(false);
     }
   };
 
@@ -202,8 +232,18 @@ export default function Payment({ bookingCode }) {
   const days = Number(booking.rental_duration) || 1;
   const deposit = Number(booking.security_deposit) || 0;
   const delivery = Number(booking.delivery_charge) || 0;
-  const completed = booking.booking_status === "COMPLETED";
+  const paymentSuccessful =
+    booking.payment_status === "SUCCESS" ||
+    done === "online" ||
+    done === "cash_paid";
+  const isRenter = booking.renter_user_code === user.userCode;
   const canPay = booking.booking_status === "PENDING" && !done;
+  const isEquipmentOwner = user.userCode === booking.owner_user_code;
+  const canConfirmCash =
+    isEquipmentOwner &&
+    booking.payment_gateway === "CASH" &&
+    booking.payment_status === "PENDING" &&
+    !["CANCELLED", "REJECTED"].includes(booking.booking_status);
   const paymentMethodLocked =
     canPay &&
     booking.payment_status === "PENDING" &&
@@ -311,7 +351,13 @@ export default function Payment({ bookingCode }) {
               <b>{currency(booking.platform_fee)}</b>
             </div>
             <div className="summary-total">
-              <b>{done ? "Total" : "Total due"}</b>
+              <b>
+                {done === "cash_pending"
+                  ? "Total due at pickup"
+                  : done
+                  ? "Total"
+                  : "Total due"}
+              </b>
               <strong>{currency(booking.total_amount)}</strong>
             </div>
 
@@ -323,23 +369,56 @@ export default function Payment({ bookingCode }) {
 
             {done ? (
               <div className="flow-success compact-success">
-                <span>
-                  <Check size={17} />
-                </span>
-                <b>{done === "online" ? "Payment successful" : "Cash payment selected"}</b>
+                {done !== "cash_pending" && (
+                  <span>
+                    <Check size={17} />
+                  </span>
+                )}
+                <b>
+                  {done === "online"
+                    ? "Online payment received"
+                    : done === "cash_paid"
+                    ? "Cash payment successful"
+                    : "Cash payment selected — not yet paid"}
+                </b>
                 <small>
                   {done === "online"
                     ? "Your payment was received. The owner will confirm your booking soon."
-                    : "Pay the owner in cash on delivery or pickup. The owner will confirm your booking soon."}
+                    : done === "cash_paid"
+                    ? "Your cash payment has been recorded as successful. The owner will confirm your booking soon."
+                    : isEquipmentOwner
+                    ? "Confirm receipt only after the renter has handed you the cash."
+                    : "Payment status is pending. Pay the owner at pickup or delivery; the owner must confirm receipt."}
                 </small>
-                {completed ? (
-                  <Link href={`/rating-review?booking=${encodeURIComponent(booking.booking_code)}`}>
-                    Continue to review <ArrowRight size={13} />
-                  </Link>
+                {canConfirmCash && (
+                  <button
+                    className="flow-primary"
+                    type="button"
+                    onClick={handleCashReceived}
+                    disabled={processing}
+                  >
+                    {processing ? "Please wait…" : "Confirm cash received"}
+                    <ArrowRight size={15} />
+                  </button>
+                )}
+                {paymentSuccessful ? (
+                  <>
+                    <Link className="flow-primary" href="/equipment">
+                      See all machines <ArrowRight size={15} />
+                    </Link>
+                    {isRenter && (
+                      <Link href={`/rating-review?booking=${encodeURIComponent(booking.booking_code)}`}>
+                        Write a review (optional) <ArrowRight size={13} />
+                      </Link>
+                    )}
+                  </>
                 ) : (
-                  <Link href="/equipment">
-                    Back to all machines <ArrowRight size={13} />
-                  </Link>
+                  <>
+                    {isRenter && <small>After payment is confirmed, you may leave an optional review.</small>}
+                    <Link href="/equipment">
+                      See all machines <ArrowRight size={13} />
+                    </Link>
+                  </>
                 )}
               </div>
             ) : canPay ? (
