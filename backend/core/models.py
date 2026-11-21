@@ -300,17 +300,69 @@ class Notifications(models.Model):
         db_table = 'notifications'
 
 
+class PaymentStatusMaster(models.Model):
+    payment_status_code = models.CharField(unique=True, max_length=45)
+    payment_status_name = models.CharField(max_length=100)
+    createdon = models.DateTimeField(blank=True, null=True)
+    createdby = models.IntegerField(blank=True, null=True)
+    updatedon = models.DateTimeField(blank=True, null=True)
+    updatedby = models.IntegerField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'payment_status_master'
+
+
+class PaymentModeMaster(models.Model):
+    payment_mode_code = models.CharField(unique=True, max_length=45)
+    payment_mode_name = models.CharField(max_length=100)
+    createdon = models.DateTimeField(blank=True, null=True)
+    createdby = models.IntegerField(blank=True, null=True)
+    updatedon = models.DateTimeField(blank=True, null=True)
+    updatedby = models.IntegerField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'payment_mode_master'
+
+
+# class Payments(models.Model):
+#     payment_code = models.CharField(unique=True, max_length=45)
+#     booking_code = models.ForeignKey(Bookings, models.DO_NOTHING, db_column='booking_code', to_field='booking_code')
+#     farmer_code = models.ForeignKey('FarmerProfiles', models.DO_NOTHING, db_column='farmer_code', to_field='farmer_code')
+#     payment_gateway = models.CharField(max_length=50, blank=True, null=True)
+#     razorpay_order_id = models.CharField(unique=True, max_length=150, blank=True, null=True)
+#     razorpay_payment_id = models.CharField(unique=True, max_length=150, blank=True, null=True)
+#     razorpay_signature = models.CharField(max_length=255, blank=True, null=True)
+#     payment_amount = models.DecimalField(max_digits=12, decimal_places=2)
+#     payment_method = models.CharField(max_length=50, blank=True, null=True)
+#     payment_status = models.CharField(max_length=8, blank=True, null=True)
+#     transaction_date = models.DateTimeField(blank=True, null=True)
+#     refund_amount = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True)
+#     refund_date = models.DateTimeField(blank=True, null=True)
+#     remarks = models.TextField(blank=True, null=True)
+#     createdon = models.DateTimeField(blank=True, null=True)
+#     createdby = models.IntegerField(blank=True, null=True)
+#     updatedon = models.DateTimeField(blank=True, null=True)
+#     updatedby = models.IntegerField(blank=True, null=True)
+
+#     class Meta:
+#         managed = False
+#         db_table = 'payments'
+
+
 class Payments(models.Model):
     payment_code = models.CharField(unique=True, max_length=45)
-    booking_code = models.ForeignKey(Bookings, models.DO_NOTHING, db_column='booking_code', to_field='booking_code')
+    booking_code = models.ForeignKey('Bookings', models.DO_NOTHING, db_column='booking_code', to_field='booking_code')
     farmer_code = models.ForeignKey('FarmerProfiles', models.DO_NOTHING, db_column='farmer_code', to_field='farmer_code')
     payment_gateway = models.CharField(max_length=50, blank=True, null=True)
+    payment_mode_code = models.ForeignKey('PaymentModeMaster', models.DO_NOTHING, db_column='payment_mode_code', to_field='payment_mode_code')
     razorpay_order_id = models.CharField(unique=True, max_length=150, blank=True, null=True)
     razorpay_payment_id = models.CharField(unique=True, max_length=150, blank=True, null=True)
     razorpay_signature = models.CharField(max_length=255, blank=True, null=True)
     payment_amount = models.DecimalField(max_digits=12, decimal_places=2)
     payment_method = models.CharField(max_length=50, blank=True, null=True)
-    payment_status = models.CharField(max_length=8, blank=True, null=True)
+    payment_status_code = models.ForeignKey('PaymentStatusMaster', models.DO_NOTHING, db_column='payment_status_code', to_field='payment_status_code')
     transaction_date = models.DateTimeField(blank=True, null=True)
     refund_amount = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True)
     refund_date = models.DateTimeField(blank=True, null=True)
@@ -323,7 +375,6 @@ class Payments(models.Model):
     class Meta:
         managed = False
         db_table = 'payments'
-
 
 class Penalties(models.Model):
     penalty_code = models.CharField(unique=True, max_length=45)

@@ -20,7 +20,16 @@ const RAZORPAY_SCRIPT = "https://checkout.razorpay.com/v1/checkout.js";
 
 const loadRazorpay = () =>
   new Promise((resolve) => {
-    if (typeof window !== "undefined" && window.Razorpay) return resolve(true);
+    if (typeof window === "undefined") return resolve(false);
+    if (window.Razorpay) return resolve(true);
+
+    // Reuse a script tag that is already loading instead of adding duplicates
+    const existing = document.querySelector(`script[src="${RAZORPAY_SCRIPT}"]`);
+    if (existing) {
+      existing.addEventListener("load", () => resolve(true), { once: true });
+      existing.addEventListener("error", () => resolve(false), { once: true });
+      return;
+    }
     const script = document.createElement("script");
     script.src = RAZORPAY_SCRIPT;
     script.onload = () => resolve(true);
@@ -31,6 +40,7 @@ const loadRazorpay = () =>
 export default function Payment({ bookingCode }) {
   const [code, setCode] = useState(bookingCode || "");
   const [user, setUser] = useState({ userCode: "", fullName: "" });
+  const [userReady, setUserReady] = useState(false);
   const [booking, setBooking] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -38,16 +48,24 @@ export default function Payment({ bookingCode }) {
   const [method, setMethod] = useState("online"); // "online" (Razorpay) | "cash"
   const [processing, setProcessing] = useState(false);
   const [payError, setPayError] = useState("");
-  const [done, setDone] = useState(null); // null | "online" | "cash_pending" | "cash_paid"
+  const [done, setDone] = useState(null); // null | "online" | "cash_paid"
 
-  /* ---------- booking code (prop first, then ?booking= in the URL) ---------- */
   useEffect(() => {
     const p = new URLSearchParams(window.location.search);
     setCode(bookingCode || p.get("booking") || "");
-    setUser(getStoredUser());
+    const stored = getStoredUser() || {};
+    setUser({
+      ...stored,
+      userCode: stored.userCode || stored.user_code || "",
+      fullName: stored.fullName || stored.full_name || "",
+    });
+    setUserReady(true);
   }, [bookingCode]);
 
   useEffect(() => {
+    // Wait until the stored user has been read, otherwise the sign-in
+    // screen flashes before the booking loads.
+    if (!userReady) return;
     if (!code) {
       setLoading(false);
       setLoadError("No booking was selected.");
@@ -67,18 +85,10 @@ export default function Payment({ bookingCode }) {
         });
         if (cancelled) return;
         setBooking(data);
-        if (
-          data.payment_gateway === "CASH" &&
-          data.payment_status === "PENDING"
-        ) {
-          setDone("cash_pending");
-        } else if (
-          data.payment_gateway === "CASH" &&
-          data.payment_status === "SUCCESS"
-        ) {
-          setDone("cash_paid");
-        } else if (data.payment_status === "SUCCESS") {
-          setDone("online");
+
+        const gateway = String(data.payment_gateway || "").toUpperCase();
+        if (data.payment_status === "SUCCESS") {
+          setDone(gateway === "CASH" ? "cash_paid" : "online");
         }
       } catch (err) {
         if (!cancelled) setLoadError(extractError(err, "We could not load your booking."));
@@ -86,10 +96,11 @@ export default function Payment({ bookingCode }) {
         if (!cancelled) setLoading(false);
       }
     })();
-    return () => { cancelled = true; };
-  }, [code, user.userCode]);
+    return () => {
+      cancelled = true;
+    };
+  }, [code, user.userCode, userReady]);
 
-  /* ---------- pay ---------- */
   const handlePay = async () => {
     if (!booking) return;
     setPayError("");
@@ -100,28 +111,24 @@ export default function Payment({ bookingCode }) {
       if (method === "cash") {
         const { data: payment } = await api.post("api/payments/cash/", {
           booking_code: booking.booking_code,
-          user_code: user.userCode,
         });
-        if (payment.payment_status === "SUCCESS") {
-          setDone("cash_paid");
-          setBooking((current) => ({
-            ...current,
-            payment_gateway: "CASH",
-            payment_status: "SUCCESS",
-          }));
-        } else {
-          setDone("cash_pending");
-        }
+        // Cash is recorded as paid straight away
+        setDone("cash_paid");
+        setBooking((current) => ({
+          ...current,
+          payment_gateway: "CASH",
+          payment_status: payment.payment_status || "SUCCESS",
+        }));
         return;
       }
 
+      // Online payment via Razorpay
       const loaded = await loadRazorpay();
       if (!loaded) throw new Error("Could not load the payment window. Check your connection.");
 
-      // The server creates the order from the stored booking total (never from the browser)
+      // Amount is calculated by the server from the booking, never sent from the browser
       const { data: order } = await api.post("api/payments/razorpay/create-order/", {
         booking_code: booking.booking_code,
-        user_code: user.userCode,
       });
 
       const rzp = new window.Razorpay({
@@ -139,12 +146,21 @@ export default function Payment({ bookingCode }) {
               razorpay_order_id: response.razorpay_order_id,
               razorpay_payment_id: response.razorpay_payment_id,
               razorpay_signature: response.razorpay_signature,
-              user_code: user.userCode,
             });
             setDone("online");
+            setBooking((current) => ({
+              ...current,
+              payment_gateway: "RAZORPAY",
+              payment_status: "SUCCESS",
+            }));
           } catch (err) {
             setPayError(
-              extractError(err, "We could not confirm your payment. If money was deducted, contact support with booking " + booking.booking_code + ".")
+              extractError(
+                err,
+                "We could not confirm your payment. If money was deducted, contact support with booking " +
+                  booking.booking_code +
+                  "."
+              )
             );
           } finally {
             setProcessing(false);
@@ -155,6 +171,13 @@ export default function Payment({ bookingCode }) {
       rzp.on("payment.failed", (resp) => {
         setPayError(resp?.error?.description || "Payment failed. Please try again.");
         setProcessing(false);
+        // Record the failed attempt in the payments table (fire and forget)
+        api
+          .post("api/payments/razorpay/failed/", {
+            razorpay_order_id: order.order_id,
+            reason: resp?.error?.description || "Payment failed",
+          })
+          .catch(() => {});
       });
       waitingForRazorpay = true;
       rzp.open();
@@ -165,23 +188,6 @@ export default function Payment({ bookingCode }) {
     }
   };
 
-  const handleCashReceived = async () => {
-    setPayError("");
-    setProcessing(true);
-    try {
-      await api.post(
-        `api/payments/cash/confirm/${encodeURIComponent(booking.booking_code)}/`
-      );
-      setDone("cash_paid");
-      setBooking((current) => ({ ...current, payment_status: "SUCCESS" }));
-    } catch (err) {
-      setPayError(extractError(err, "Cash receipt could not be confirmed."));
-    } finally {
-      setProcessing(false);
-    }
-  };
-
-  /* ---------- loading / error ---------- */
   if (loading) {
     return (
       <FlowFrame active="Payment">
@@ -236,29 +242,37 @@ export default function Payment({ bookingCode }) {
     booking.payment_status === "SUCCESS" ||
     done === "online" ||
     done === "cash_paid";
-  const isRenter = booking.renter_user_code === user.userCode;
-  const canPay = booking.booking_status === "PENDING" && !done;
+  const bookingStatus = String(booking.booking_status || "").toUpperCase();
+  const nonPayableStatuses = ["CANCELLED", "REJECTED", "COMPLETED", "EXPIRED"];
+  const bookingRenter =
+    booking.renter_user_code || booking.user_code || booking.farmer_code;
+  const isRenter = bookingRenter === user.userCode;
   const isEquipmentOwner = user.userCode === booking.owner_user_code;
-  const canConfirmCash =
-    isEquipmentOwner &&
-    booking.payment_gateway === "CASH" &&
-    booking.payment_status === "PENDING" &&
-    !["CANCELLED", "REJECTED"].includes(booking.booking_status);
-  const paymentMethodLocked =
-    canPay &&
-    booking.payment_status === "PENDING" &&
-    Boolean(booking.payment_gateway);
+  // Only the renter pays.
+  const canPay =
+    !nonPayableStatuses.includes(bookingStatus) &&
+    !paymentSuccessful &&
+    !isEquipmentOwner;
+  const rentalMonitoringUrl = `/rental-monitoring?booking=${encodeURIComponent(
+    booking.booking_code
+  )}&action=add`;
 
   return (
     <FlowFrame active="Payment">
       <main className="flow-main flow-narrow">
-        <Link className="flow-back" href={`/equipment-details?code=${encodeURIComponent(booking.equipment_code)}`}>
+        <Link
+          className="flow-back"
+          href={`/equipment-details?code=${encodeURIComponent(booking.equipment_code)}`}
+        >
           <ArrowLeft size={14} /> Back to equipment
         </Link>
         <div className="flow-page-intro compact-intro">
           <span className="flow-eyebrow">SECURE CHECKOUT</span>
           <h1>Payment details</h1>
-          <p>Booking {booking.booking_code}. Pay online with Razorpay or select cash to pay the owner at pickup or delivery.</p>
+          <p>
+            Booking {booking.booking_code}. Pay online with Razorpay or select cash to pay the
+            owner at pickup or delivery.
+          </p>
         </div>
         <div className="checkout-steps">
           <span className="step-done">
@@ -267,11 +281,11 @@ export default function Payment({ bookingCode }) {
             </i>{" "}
             Booking
           </span>
-          <span className="step-active">
-            <i>2</i> Payment
+          <span className={done ? "step-done" : "step-active"}>
+            <i>{done ? <Check size={12} /> : "2"}</i> Payment
           </span>
-          <span>
-            <i>3</i> Review
+          <span className={done ? "step-active" : ""}>
+            <i>3</i> Rental Monitoring
           </span>
         </div>
         <div className="payment-layout">
@@ -283,8 +297,9 @@ export default function Payment({ bookingCode }) {
                 <input
                   type="radio"
                   name="method"
+                  value="online"
                   checked={method === "online"}
-                  disabled={!canPay || paymentMethodLocked}
+                  disabled={!canPay}
                   onChange={() => setMethod("online")}
                 />
                 <span className="payment-symbol">
@@ -299,8 +314,9 @@ export default function Payment({ bookingCode }) {
                 <input
                   type="radio"
                   name="method"
+                  value="cash"
                   checked={method === "cash"}
-                  disabled={!canPay || paymentMethodLocked}
+                  disabled={!canPay}
                   onChange={() => setMethod("cash")}
                 />
                 <span className="payment-symbol">
@@ -312,11 +328,6 @@ export default function Payment({ bookingCode }) {
                 </span>
               </label>
             </div>
-            {paymentMethodLocked && (
-              <p className="booking-fine" role="status">
-                A payment method is already selected for this booking. Continue with that method.
-              </p>
-            )}
             <div className="payment-safety">
               <LockKeyhole size={15} />
               <span>Encrypted and secure checkout</span>
@@ -327,8 +338,8 @@ export default function Payment({ bookingCode }) {
             <span className="flow-eyebrow">ORDER SUMMARY</span>
             <h3>{booking.equipment_name}</h3>
             <p>
-              <CalendarDays size={13} /> {formatDay(booking.start_date)} – {formatDay(booking.end_date)} · {days}{" "}
-              {days === 1 ? "day" : "days"}
+              <CalendarDays size={13} /> {formatDay(booking.start_date)} –{" "}
+              {formatDay(booking.end_date)} · {days} {days === 1 ? "day" : "days"}
             </p>
             <div className="summary-line">
               <span>Equipment rental</span>
@@ -351,13 +362,7 @@ export default function Payment({ bookingCode }) {
               <b>{currency(booking.platform_fee)}</b>
             </div>
             <div className="summary-total">
-              <b>
-                {done === "cash_pending"
-                  ? "Total due at pickup"
-                  : done
-                  ? "Total"
-                  : "Total due"}
-              </b>
+              <b>{done ? "Total" : "Total due"}</b>
               <strong>{currency(booking.total_amount)}</strong>
             </div>
 
@@ -369,56 +374,29 @@ export default function Payment({ bookingCode }) {
 
             {done ? (
               <div className="flow-success compact-success">
-                {done !== "cash_pending" && (
-                  <span>
-                    <Check size={17} />
-                  </span>
-                )}
+                <span>
+                  <Check size={17} />
+                </span>
                 <b>
-                  {done === "online"
-                    ? "Online payment received"
-                    : done === "cash_paid"
-                    ? "Cash payment successful"
-                    : "Cash payment selected — not yet paid"}
+                  {done === "online" ? "Online payment received" : "Cash payment successful"}
                 </b>
                 <small>
                   {done === "online"
-                    ? "Your payment was received. The owner will confirm your booking soon."
-                    : done === "cash_paid"
-                    ? "Your cash payment has been recorded as successful. The owner will confirm your booking soon."
-                    : isEquipmentOwner
-                    ? "Confirm receipt only after the renter has handed you the cash."
-                    : "Payment status is pending. Pay the owner at pickup or delivery; the owner must confirm receipt."}
+                    ? "Your payment was received. Add your rental details to start rental monitoring."
+                    : "Your cash payment has been recorded as successful. Add your rental details to start rental monitoring."}
                 </small>
-                {canConfirmCash && (
-                  <button
-                    className="flow-primary"
-                    type="button"
-                    onClick={handleCashReceived}
-                    disabled={processing}
+                <Link className="flow-primary" href={rentalMonitoringUrl}>
+                  Add rental &amp; open monitoring <ArrowRight size={15} />
+                </Link>
+                <Link href="/equipment">
+                  See all machines <ArrowRight size={13} />
+                </Link>
+                {paymentSuccessful && isRenter && (
+                  <Link
+                    href={`/rating-review?booking=${encodeURIComponent(booking.booking_code)}`}
                   >
-                    {processing ? "Please wait…" : "Confirm cash received"}
-                    <ArrowRight size={15} />
-                  </button>
-                )}
-                {paymentSuccessful ? (
-                  <>
-                    <Link className="flow-primary" href="/equipment">
-                      See all machines <ArrowRight size={15} />
-                    </Link>
-                    {isRenter && (
-                      <Link href={`/rating-review?booking=${encodeURIComponent(booking.booking_code)}`}>
-                        Write a review (optional) <ArrowRight size={13} />
-                      </Link>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    {isRenter && <small>After payment is confirmed, you may leave an optional review.</small>}
-                    <Link href="/equipment">
-                      See all machines <ArrowRight size={13} />
-                    </Link>
-                  </>
+                    Write a review (optional) <ArrowRight size={13} />
+                  </Link>
                 )}
               </div>
             ) : canPay ? (
@@ -432,8 +410,19 @@ export default function Payment({ bookingCode }) {
               </button>
             ) : (
               <div className="flow-success compact-success">
-                <b>Booking {String(booking.booking_status || "").toLowerCase()}</b>
-                <small>This booking is no longer waiting for payment.</small>
+                <b>
+                  {isEquipmentOwner && !nonPayableStatuses.includes(bookingStatus)
+                    ? "Waiting for the renter to pay"
+                    : `Booking ${bookingStatus.toLowerCase()}`}
+                </b>
+                <small>
+                  {isEquipmentOwner && !nonPayableStatuses.includes(bookingStatus)
+                    ? "The renter has not completed payment for this booking yet."
+                    : "This booking is no longer waiting for payment."}
+                </small>
+                <Link href={rentalMonitoringUrl}>
+                  Add rental &amp; open monitoring <ArrowRight size={13} />
+                </Link>
               </div>
             )}
             <small className="booking-fine">

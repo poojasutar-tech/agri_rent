@@ -78,7 +78,7 @@ export const AuthProvider = ({ children }) => {
 
       if (refreshToken && token) {
         try {
-          const res = await api.post("token/refresh/", {
+          const res = await api.post("api/token/refresh/", {
             refresh: refreshToken
           });
 

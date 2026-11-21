@@ -2486,7 +2486,7 @@ td > b {
   width: 100%;
   border: 0;
   border-radius: 8px;
-  background: #19794b;
+  background: #56d899;
   color: white;
   text-decoration: none;
   display: flex;
@@ -2502,6 +2502,7 @@ td > b {
 }
 .flow-primary:hover {
   background: #12663f;
+  color: #ffffff;
   transform: translateY(-1px);
 }
 .flow-back {
@@ -2728,7 +2729,7 @@ td > b {
   background: white;
   border: 1px solid #e7ece7;
   border-radius: 12px;
-  padding: 19px;
+  padding: 70px;
 }
 .flow-form-card h2 {
   font-size: 15px;
