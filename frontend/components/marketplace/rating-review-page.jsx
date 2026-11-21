@@ -131,20 +131,30 @@ export default function RatingReview({ bookingCode }) {
     );
   }
 
-  if (submitted) {
-    return shell(
-      <div className="flow-success">
-        <span>
-          <Check size={17} />
-        </span>
-        <b>Thank you for your review</b>
-        <small>Your feedback helps other farmers choose the right machine.</small>
-        <Link href="/equipment">
-          Back to all machines <ArrowRight size={13} />
-        </Link>
-      </div>
-    );
-  }
+if (submitted) {
+  return shell(
+    <div className="mx-auto my-8 flex max-w-md flex-col items-center rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+      <span className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+        <Check size={22} strokeWidth={2.5} />
+      </span>
+
+      <b className="text-lg font-semibold text-slate-900">
+        Thank you for your review
+      </b>
+
+      <small className="mt-1.5 text-sm leading-relaxed text-slate-500">
+        Your feedback helps other farmers choose the right machine.
+      </small>
+
+      <Link
+        href="/equipment"
+        className="mt-6 inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2"
+      >
+        Back to all machines <ArrowRight size={15} />
+      </Link>
+    </div>
+  );
+}
 
   if (booking.renter_user_code !== user.userCode) {
     return shell(

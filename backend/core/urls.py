@@ -73,10 +73,59 @@ urlpatterns = [
     path('api/bookings/detail/<str:booking_code>/', BookingsDetailView.as_view(), name='bookings-detail'),
     path('api/bookings/status/<str:booking_code>/', BookingStatusUpdateView.as_view(), name='bookings-status'),
 
-    path('api/payments/razorpay/create-order/', RazorpayCreateOrderView.as_view(), name='razorpay-create-order'),
-    path('api/payments/razorpay/verify/', RazorpayVerifyView.as_view(), name='razorpay-verify'),
-    path('api/payments/cash/', CashPaymentView.as_view(), name='payments-cash'),
-    path('api/payments/cash/confirm/<str:booking_code>/', CashPaymentConfirmView.as_view(), name='payments-cash-confirm'),
+       
+    path('api/payment_statuses/', PaymentStatusMasterListView.as_view(), name='payment-status-list'),
+    path('api/payment_statuses/create/', PaymentStatusMasterCreateView.as_view(), name='payment-status-create'),
+    path('api/payment_statuses/<str:payment_status_code>/', PaymentStatusMasterDetailView.as_view(), name='payment-status-detail'),
+    path('api/payment_statuses/<str:payment_status_code>/update/', PaymentStatusMasterUpdateView.as_view(), name='payment-status-update'),
+    path('api/payment_statuses/<str:payment_status_code>/delete/', PaymentStatusMasterDeleteView.as_view(), name='payment-status-delete'),
+        
+    path('api/payment_modes/', PaymentModeMasterListView.as_view(), name='payment-mode-list'),
+    path('api/payment_modes/create/', PaymentModeMasterCreateView.as_view(), name='payment-mode-create'),
+    path('api/payment_modes/<str:payment_mode_code>/', PaymentModeMasterDetailView.as_view(), name='payment-mode-detail'),
+    path('api/payment_modes/update/<str:payment_mode_code>/', PaymentModeMasterUpdateView.as_view(), name='payment-mode-update'),
+    path('api/payment_modes/delete/<str:payment_mode_code>/', PaymentModeMasterDeleteView.as_view(), name='payment-mode-delete'),
+    
+
+
+    path('api/payments/cash/', EquipmentCashPaymentView.as_view(), name='payment-cash'),
+    path('api/payments/cash/confirm/<str:booking_code>/', EquipmentCashConfirmView.as_view(), name='payment-cash-confirm'),
+    path('api/payments/razorpay/create-order/', RazorpayCreateOrderView.as_view(), name='payment-razorpay-create-order'),
+    path('api/payments/razorpay/verify/', RazorpayVerifyView.as_view(), name='payment-razorpay-verify'),
+    path('api/payments/razorpay/failed/', RazorpayFailedView.as_view(), name='payment-razorpay-failed'),
+    path('api/payments/status/<str:booking_code>/', BookingPaymentStatusView.as_view(), name='payment-status'),
+
+
+    # path('api/payments/razorpay/create-order/', RazorpayCreateOrderView.as_view(), name='razorpay-create-order'),
+    # path('api/payments/razorpay/verify/', RazorpayVerifyView.as_view(), name='razorpay-verify'),
+    # path('api/payments/cash/', CashPaymentView.as_view(), name='payments-cash'),
+    # path('api/payments/cash/confirm/<str:booking_code>/', CashPaymentConfirmView.as_view(), name='payments-cash-confirm'),
+
+
+    path("api/maintenance-records/", MaintenanceRecordListView.as_view(), name="maintenance-record-list"),
+    path("api/maintenance-records/create/", MaintenanceRecordCreateView.as_view(), name="maintenance-record-create"),
+    path("api/maintenance-records/update/<str:maintenance_code>/", MaintenanceRecordUpdateView.as_view(), name="maintenance-record-update"),
+    path("api/maintenance-records/delete/<str:maintenance_code>/", MaintenanceRecordDeleteView.as_view(), name="maintenance-record-delete"),
+
+    path("api/notifications/", NotificationListView.as_view(), name="notification-list"),
+    path("api/notifications/create/", NotificationCreateView.as_view(), name="notification-create"),
+    path("api/notifications/update/<str:notification_code>/", NotificationUpdateView.as_view(), name="notification-update"),
+    path("api/notifications/delete/<str:notification_code>/", NotificationDeleteView.as_view(), name="notification-delete"),
+
+    path("api/payments/", PaymentListView.as_view(), name="payment-list"),
+    path("api/payments/create/", PaymentCreateView.as_view(), name="payment-create"),
+    path("api/payments/update/<str:payment_code>/", PaymentUpdateView.as_view(), name="payment-update"),
+    path("api/payments/delete/<str:payment_code>/", PaymentDeleteView.as_view(), name="payment-delete"),
+
+    path("api/penalties/", PenaltyListView.as_view(), name="penalty-list"),
+    path("api/penalties/create/", PenaltyCreateView.as_view(), name="penalty-create"),
+    path("api/penalties/update/<str:penalty_code>/", PenaltyUpdateView.as_view(), name="penalty-update"),
+    path("api/penalties/delete/<str:penalty_code>/", PenaltyDeleteView.as_view(), name="penalty-delete"),
+
+    path("api/rentals/", RentalListView.as_view(), name="rental-list"),
+    path("api/rentals/create/", RentalCreateView.as_view(), name="rental-create"),
+    path("api/rentals/update/<str:rental_code>/", RentalUpdateView.as_view(), name="rental-update"),
+    path("api/rentals/delete/<str:rental_code>/", RentalDeleteView.as_view(), name="rental-delete"),
 
     path('api/reviews/', ReviewsListView.as_view(), name='reviews-list'),
     path('api/reviews/create/', ReviewsCreateView.as_view(), name='reviews-create'),

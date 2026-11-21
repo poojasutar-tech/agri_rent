@@ -13,10 +13,7 @@ class CustomJWTAuthentication(JWTAuthentication):
         if raw_token is None:
             return None
 
-        try:
-            validated_token = self.get_validated_token(raw_token)
-        except Exception as e:
-            return None
+        validated_token = self.get_validated_token(raw_token)
 
         user = self.get_user(validated_token)
         # DRF expects request.user to have 'is_authenticated'

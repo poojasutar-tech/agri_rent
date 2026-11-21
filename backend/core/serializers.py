@@ -321,7 +321,15 @@ class EquipmentSerializer(serializers.ModelSerializer):
                 return None
         return None
 
+class PaymentStatusMasterSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PaymentStatusMaster
+        fields = "__all__"        
 
+class PaymentModeMasterSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PaymentModeMaster
+        fields = "__all__"     
 
 # Booking and payment
 
@@ -364,37 +372,389 @@ class BookingsSerializer(serializers.ModelSerializer):
 
     def get_payment_status(self, obj):
         payment = latest_payment(obj)
-        return payment.payment_status if payment else None
+        return payment.payment_status_code_id if payment else None
 
     def get_payment_gateway(self, obj):
         payment = latest_payment(obj)
         return payment.payment_gateway if payment else None
 
 
-class PaymentsSerializer(serializers.ModelSerializer):
-    booking_code = serializers.SlugRelatedField(slug_field='booking_code', read_only=True)
-    farmer_code = serializers.SlugRelatedField(slug_field='farmer_code', read_only=True)
+# class PaymentsSerializer(serializers.ModelSerializer):
+#     booking_code = serializers.SlugRelatedField(slug_field='booking_code', read_only=True)
+#     farmer_code = serializers.SlugRelatedField(slug_field='farmer_code', read_only=True)
+
+#     class Meta:
+#         model = Payments
+#         # razorpay_signature is intentionally NOT exposed
+#         fields = [
+#             'payment_code', 'booking_code', 'farmer_code', 'payment_gateway',
+#             'razorpay_order_id', 'razorpay_payment_id', 'payment_amount',
+#             'payment_method', 'payment_status', 'transaction_date',
+#             'refund_amount', 'refund_date', 'remarks', 'createdon',
+#         ]
+
+
+# class ReviewsSerializer(serializers.ModelSerializer):
+#     booking_code = serializers.SlugRelatedField(slug_field='booking_code', read_only=True)
+#     equipment_code = serializers.SlugRelatedField(slug_field='equipment_code', read_only=True)
+#     farmer_code = serializers.SlugRelatedField(slug_field='farmer_code', read_only=True)
+#     farmer_name = serializers.CharField(source='farmer_code.user_code.full_name', read_only=True)
+
+#     class Meta:
+#         model = Reviews
+#         fields = [
+#             'review_code', 'booking_code', 'equipment_code', 'farmer_code', 'farmer_name',
+#             'rating', 'review_comment', 'status', 'createdon',
+#         ]
+
+
+
+
+
+
+import re
+from django.db import transaction
+from rest_framework import serializers
+
+
+def _next_prefixed_code(queryset, code_field: str, prefix: str, width: int = 6) -> str:
+    """Generate the next zero-padded sequential code under a row lock."""
+    last_obj = queryset.select_for_update().order_by(code_field).last()
+    if not last_obj:
+        return f"{prefix}{1:0{width}d}"
+
+    raw_code = getattr(last_obj, code_field) or ""
+    match = re.search(r"(\d+)$", str(raw_code))
+    if not match:
+        return f"{prefix}{1:0{width}d}"
+
+    next_num = int(match.group(1)) + 1
+    return f"{prefix}{next_num:0{width}d}"
+
+
+class NullableFieldsSerializerMixin:
+    """Normalize empty string / 'null' / None values to None on specified fields."""
+
+    nullable_fields: tuple[str, ...] = ()
+
+    def to_internal_value(self, data):
+        mutable_data = data.copy() if hasattr(data, "copy") else dict(data)
+        for field in self.nullable_fields:
+            if field in mutable_data and mutable_data[field] in ("", "null", None):
+                mutable_data[field] = None
+        return super().to_internal_value(mutable_data)
+
+
+class MaintenanceRecordsSerializer(NullableFieldsSerializerMixin, serializers.ModelSerializer):
+    equipment_code = serializers.SlugRelatedField(
+        slug_field="equipment_code",
+        queryset=Equipment.objects.all(),
+    )
+    reported_by = serializers.SlugRelatedField(
+        slug_field="user_code",
+        queryset=Users.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+
+    nullable_fields = (
+        "reported_by",
+        "maintenance_type",
+        "maintenance_date",
+        "completion_date",
+        "maintenance_cost",
+        "maintenance_status",
+        "remarks",
+    )
+
+    class Meta:
+        model = MaintenanceRecords
+        fields = [
+            "maintenance_code",
+            "equipment_code",
+            "reported_by",
+            "maintenance_type",
+            "problem_description",
+            "maintenance_date",
+            "completion_date",
+            "maintenance_cost",
+            "maintenance_status",
+            "remarks",
+            "createdon",
+            "createdby",
+            "updatedon",
+            "updatedby",
+        ]
+        read_only_fields = [
+            "maintenance_code",
+            "createdon",
+            "createdby",
+            "updatedon",
+            "updatedby",
+        ]
+
+    def create(self, validated_data):
+        with transaction.atomic():
+            validated_data["maintenance_code"] = _next_prefixed_code(
+                MaintenanceRecords.objects.all(), "maintenance_code", "MR"
+            )
+            return super().create(validated_data)
+
+
+class NotificationsSerializer(NullableFieldsSerializerMixin, serializers.ModelSerializer):
+    user_code = serializers.SlugRelatedField(
+        slug_field="user_code",
+        queryset=Users.objects.all(),
+    )
+
+    nullable_fields = (
+        "notification_type",
+        "reference_id",
+        "reference_type",
+        "read_at",
+    )
+
+    class Meta:
+        model = Notifications
+        fields = [
+            "notification_code",
+            "user_code",
+            "title",
+            "message",
+            "notification_type",
+            "reference_id",
+            "reference_type",
+            "is_read",
+            "read_at",
+            "createdon",
+        ]
+        read_only_fields = [
+            "notification_code",
+            "createdon",
+        ]
+
+    def create(self, validated_data):
+        with transaction.atomic():
+            validated_data["notification_code"] = _next_prefixed_code(
+                Notifications.objects.all(), "notification_code", "NT"
+            )
+            return super().create(validated_data)
+
+
+class PaymentsSerializer(NullableFieldsSerializerMixin, serializers.ModelSerializer):
+    booking_code = serializers.SlugRelatedField(
+        slug_field="booking_code",
+        queryset=Bookings.objects.all(),
+    )
+    farmer_code = serializers.SlugRelatedField(
+        slug_field="farmer_code",
+        queryset=FarmerProfiles.objects.all(),
+    )
+
+    nullable_fields = (
+        "payment_gateway",
+        "razorpay_order_id",
+        "razorpay_payment_id",
+        "razorpay_signature",
+        "payment_method",
+        "payment_status",
+        "transaction_date",
+        "refund_amount",
+        "refund_date",
+        "remarks",
+    )
 
     class Meta:
         model = Payments
-        # razorpay_signature is intentionally NOT exposed
         fields = [
-            'payment_code', 'booking_code', 'farmer_code', 'payment_gateway',
-            'razorpay_order_id', 'razorpay_payment_id', 'payment_amount',
-            'payment_method', 'payment_status', 'transaction_date',
-            'refund_amount', 'refund_date', 'remarks', 'createdon',
+            "payment_code",
+            "booking_code",
+            "farmer_code",
+            "payment_gateway",
+            "razorpay_order_id",
+            "razorpay_payment_id",
+            "razorpay_signature",
+            "payment_amount",
+            "payment_method",
+            "payment_status",
+            "transaction_date",
+            "refund_amount",
+            "refund_date",
+            "remarks",
+            "createdon",
+            "createdby",
+            "updatedon",
+            "updatedby",
+        ]
+        read_only_fields = [
+            "payment_code",
+            "createdon",
+            "createdby",
+            "updatedon",
+            "updatedby",
         ]
 
+    def create(self, validated_data):
+        with transaction.atomic():
+            validated_data["payment_code"] = _next_prefixed_code(
+                Payments.objects.all(), "payment_code", "PY"
+            )
+            return super().create(validated_data)
 
-class ReviewsSerializer(serializers.ModelSerializer):
-    booking_code = serializers.SlugRelatedField(slug_field='booking_code', read_only=True)
-    equipment_code = serializers.SlugRelatedField(slug_field='equipment_code', read_only=True)
-    farmer_code = serializers.SlugRelatedField(slug_field='farmer_code', read_only=True)
-    farmer_name = serializers.CharField(source='farmer_code.user_code.full_name', read_only=True)
+
+class PenaltiesSerializer(NullableFieldsSerializerMixin, serializers.ModelSerializer):
+    rental_code = serializers.SlugRelatedField(
+        slug_field="rental_code",
+        queryset=Rentals.objects.all(),
+    )
+    farmer_code = serializers.SlugRelatedField(
+        slug_field="farmer_code",
+        queryset=FarmerProfiles.objects.all(),
+    )
+
+    nullable_fields = (
+        "penalty_description",
+        "payment_status",
+        "paid_amount",
+        "paid_date",
+        "remarks",
+    )
+
+    class Meta:
+        model = Penalties
+        fields = [
+            "penalty_code",
+            "rental_code",
+            "farmer_code",
+            "penalty_type",
+            "penalty_description",
+            "penalty_amount",
+            "payment_status",
+            "paid_amount",
+            "paid_date",
+            "remarks",
+            "createdon",
+            "createdby",
+            "updatedon",
+            "updatedby",
+        ]
+        read_only_fields = [
+            "penalty_code",
+            "createdon",
+            "createdby",
+            "updatedon",
+            "updatedby",
+        ]
+
+    def create(self, validated_data):
+        with transaction.atomic():
+            validated_data["penalty_code"] = _next_prefixed_code(
+                Penalties.objects.all(), "penalty_code", "PN"
+            )
+            return super().create(validated_data)
+
+
+class RentalsSerializer(NullableFieldsSerializerMixin, serializers.ModelSerializer):
+    booking_code = serializers.PrimaryKeyRelatedField(
+        queryset=Bookings.objects.all(),
+    )
+    equipment_code = serializers.SlugRelatedField(
+        slug_field="equipment_code",
+        queryset=Equipment.objects.all(),
+    )
+    farmer_code = serializers.SlugRelatedField(
+        slug_field="farmer_code",
+        queryset=FarmerProfiles.objects.all(),
+    )
+
+    nullable_fields = (
+        "actual_start_date",
+        "actual_return_date",
+        "rental_status",
+        "equipment_condition_before",
+        "equipment_condition_after",
+        "handover_remarks",
+        "return_remarks",
+    )
+
+    class Meta:
+        model = Rentals
+        fields = [
+            "rental_code",
+            "booking_code",
+            "equipment_code",
+            "farmer_code",
+            "actual_start_date",
+            "expected_return_date",
+            "actual_return_date",
+            "rental_status",
+            "equipment_condition_before",
+            "equipment_condition_after",
+            "handover_remarks",
+            "return_remarks",
+            "createdon",
+            "createdby",
+            "updatedon",
+            "updatedby",
+        ]
+        read_only_fields = [
+            "rental_code",
+            "createdon",
+            "createdby",
+            "updatedon",
+            "updatedby",
+        ]
+
+    def create(self, validated_data):
+        with transaction.atomic():
+            validated_data["rental_code"] = _next_prefixed_code(
+                Rentals.objects.all(), "rental_code", "RN"
+            )
+            return super().create(validated_data)
+
+
+class ReviewsSerializer(NullableFieldsSerializerMixin, serializers.ModelSerializer):
+    booking_code = serializers.SlugRelatedField(
+        slug_field="booking_code",
+        queryset=Bookings.objects.all(),
+    )
+    equipment_code = serializers.SlugRelatedField(
+        slug_field="equipment_code",
+        queryset=Equipment.objects.all(),
+    )
+    farmer_code = serializers.SlugRelatedField(
+        slug_field="farmer_code",
+        queryset=FarmerProfiles.objects.all(),
+    )
+
+    nullable_fields = ("review_comment",)
 
     class Meta:
         model = Reviews
         fields = [
-            'review_code', 'booking_code', 'equipment_code', 'farmer_code', 'farmer_name',
-            'rating', 'review_comment', 'status', 'createdon',
+            "review_code",
+            "booking_code",
+            "equipment_code",
+            "farmer_code",
+            "rating",
+            "review_comment",
+            "status",
+            "createdon",
+            "createdby",
+            "updatedon",
+            "updatedby",
         ]
+        read_only_fields = [
+            "review_code",
+            "createdon",
+            "createdby",
+            "updatedon",
+            "updatedby",
+        ]
+
+    def create(self, validated_data):
+        with transaction.atomic():
+            validated_data["review_code"] = _next_prefixed_code(
+                Reviews.objects.all(), "review_code", "RV"
+            )
+            return super().create(validated_data)
